@@ -22,11 +22,16 @@ echo.
 echo ==^> Checking prerequisites
 echo.
 
-where python >nul 2>&1
+rem Find a REAL Python - the py launcher counts, the Microsoft Store's fake
+rem python.exe stub does not - and install Python automatically if there is
+rem none (winget first, python.org directly when winget is broken).
+powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%tools\ensure_python.ps1" >nul
 if errorlevel 1 goto :no_python
 
-python --version
-if errorlevel 1 goto :no_python
+set "SYSPY="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%tools\ensure_python.ps1" -NoInstall`) do set "SYSPY=%%I"
+if not defined SYSPY goto :no_python
+echo     Using Python: %SYSPY%
 
 rem --------------------------------------------------------------------------
 echo.
@@ -37,11 +42,11 @@ if exist "%PY%" (
     echo     Reusing existing .venv
 ) else (
     echo     Creating .venv
-    python -m venv "%VENV%"
+    "%SYSPY%" -m venv "%VENV%"
     if errorlevel 1 (
         echo.
         echo !! Failed to create the virtual environment.
-        echo    Try running:  python -m pip install --upgrade virtualenv
+        echo    Delete the .venv folder if it exists and run this again.
         goto :fail
     )
 )
@@ -134,18 +139,16 @@ exit /b 0
 rem --------------------------------------------------------------------------
 :no_python
 echo.
-echo !! Python was not found on your PATH.
+echo !! Python could not be found, and the automatic install did not
+echo    complete either (the messages above say why).
 echo.
-echo    1. Download Python from:  https://www.python.org/downloads/windows/
-echo    2. Run the installer.
-echo    3. IMPORTANT: on the very first screen, tick the checkbox
+echo    If Python was just installed for the first time, simply close
+echo    this window and run build_windows.bat again - a fresh window
+echo    picks up the new install.
 echo.
-echo           [x] Add python.exe to PATH
-echo.
-echo       at the bottom - it is OFF by default. Without it this script
-echo       cannot find Python.
-echo    4. Finish the install, close this window, open a NEW Command
-echo       Prompt and run build_windows.bat again.
+echo    Otherwise install it yourself from:
+echo        https://www.python.org/downloads/windows/
+echo    and tick  [x] Add python.exe to PATH  on the first screen.
 echo.
 pause
 exit /b 1

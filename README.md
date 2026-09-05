@@ -76,8 +76,9 @@ Start if you want it handy.
 First launch, SmartScreen will show *"Windows protected your PC"* for the same
 reason — unsigned. Click **More info → Run anyway**, once.
 
-If Windows says python isn't recognised, install it from <https://python.org> and
-**tick "Add python.exe to PATH"** on the first screen of the installer.
+Python itself is arranged automatically: if the build script cannot find a
+working Python it installs one for you (winget first, python.org directly when
+winget is unwell) - no manual steps.
 
 ---
 
