@@ -1,0 +1,38 @@
+# Build output
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated icons (rebuilt by the build scripts)
+assets/icon.icns
+
+# Local data - never commit keys or your listings database
+*.sqlite3
+config.json
+credentials.json
+.token_cache.json
+hunter.log
+dashboard-snapshot.html
+.env
+
+# OS noise
+.DS_Store
+Thumbs.db
+assets/icon.png
+assets/icon.ico
+assets/icon.icns
+assets/icon.iconset/
+
+# Build scripts: environments, logs and reports
+.venv-build/
+.venv-build-mac/
+build-mac-log.txt
+build-win-log.txt
+dealhunter-selftest.txt
+dealhunter-crash.log

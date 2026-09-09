@@ -1,0 +1,16 @@
+# eBay Deal Hunter - runtime + build requirements
+#
+# The app itself (dealhunter/core.py, server.py, paths.py, ui.py) runs on the
+# Python standard library alone - no third-party packages are needed to scan,
+# store or serve anything. The two entries below exist only so the app can open
+# in a real native window instead of a browser tab, and so the build scripts can
+# generate the icons.
+
+# Native desktop window wrapper around the local HTTP server.
+#   macOS   -> WKWebView via pyobjc
+#   Windows -> WebView2 / WinForms via pythonnet
+pywebview>=4.4
+
+# Build-time only: tools/make_icons.py draws assets/icon.png / .ico / .iconset.
+# Not imported by the packaged app (it is excluded in dealhunter.spec).
+pillow>=10.0
