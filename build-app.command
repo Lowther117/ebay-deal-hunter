@@ -152,7 +152,13 @@ fi
 
 # --only-binary :all: everywhere: a missing wheel then fails in seconds
 # instead of trying to compile from source and hunting for a toolchain.
+# The one exception is proxy_tools, a pure-Python dependency of pywebview
+# that PyPI only carries as a source package - under --only-binary pip
+# rejects every pywebview version and the build stops. It needs no
+# compiler, so it goes in first on its own.
 say "Components to bake in"
+"$PY" -m pip install proxy_tools \
+    || fail "could not install proxy_tools (needed by pywebview)"
 "$PY" -m pip install --only-binary :all: -r requirements.txt \
     || fail "could not install the app's requirements"
 

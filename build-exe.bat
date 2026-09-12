@@ -60,7 +60,11 @@ rem instead of trying to compile from source and hunting for Visual Studio.
 rem ---------------------------------------------------------------------
 echo.
 echo == Components to bake in
+rem proxy_tools (a pure-Python dependency of pywebview) is source-only on
+rem PyPI, so under --only-binary pip rejects every pywebview - install it
+rem first on its own. No compiler involved.
 echo    Window wrapper and icon tools...
+"%PY%" -m pip install proxy_tools >> "%LOG%" 2>&1
 "%PY%" -m pip install --only-binary :all: -r "%HERE%requirements.txt" >> "%LOG%" 2>&1
 if errorlevel 1 (
     echo    ERROR: could not install the app's requirements.
