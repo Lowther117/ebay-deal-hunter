@@ -3,14 +3,18 @@ Other places to look besides eBay's main Buy It Now listings.
 
 Sites fall into two camps, and pretending otherwise only wastes time:
 
-  SEARCHABLE - there is a supported, machine-readable way in. Right now that
-               means eBay and its Refurbished and auction listings, which the
-               engine queries directly and scores like everything else.
+  SEARCHABLE - there is a machine-readable way in that a plain HTTP request
+               can use. eBay (official API) and CeX (the stock index its own
+               site searches) - both live in core.py, queried directly and
+               scored like everything else.
 
-  QUICK LINK - no usable public API. Rather than scrape (which breaks within
-               weeks, gets the machine blocked, and breaches their terms), the
-               app builds the equivalent search URL and opens it in the browser.
-               Less clever, but it works today and it works next year.
+  QUICK LINK - nothing usable without a browser or a login. Vinted sits behind
+               DataDome bot protection and Facebook Marketplace needs a signed-in
+               account; the rest have no endpoint at all. Rather than scrape
+               (which breaks within weeks, gets the machine blocked, and
+               breaches their terms), the app builds the equivalent search URL
+               and opens it in the browser. Less clever, but it works today
+               and it works next year.
 
 The list below is curated by reputation, not by what is technically reachable.
 A site that mostly hosts scams is not a favour to anyone.
@@ -41,9 +45,19 @@ QUICK_LINKS = [
     },
     {
         "name": "CeX",
-        "why": "Tested stock with a 2-year warranty and high-street returns",
+        "why": "Tested stock with a 2-year warranty and high-street returns - "
+               "also searched automatically when the CeX source is on",
         "url": lambda q, cap: "https://uk.webuy.com/search?stext="
                               + urllib.parse.quote_plus(_clean(q)),
+    },
+    {
+        "name": "Vinted",
+        "why": "Buyer protection on every order, growing fast for tech - can't be "
+               "searched from the app (bot-blocked), so this opens the search",
+        "url": lambda q, cap: "https://www.vinted.co.uk/catalog?search_text="
+                              + urllib.parse.quote_plus(_clean(q))
+                              + "&currency=GBP&order=newest_first"
+                              + (f"&price_to={int(cap)}" if cap else ""),
     },
     {
         "name": "musicMagpie",

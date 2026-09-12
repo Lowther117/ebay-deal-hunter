@@ -168,7 +168,10 @@ class Handler(BaseHTTPRequestHandler):
         token = (query.get("t") or [""])[0]
         if not token:
             token = self.headers.get("X-Session-Token", "")
-        return secrets.compare_digest(token, SESSION_TOKEN)
+        try:
+            return secrets.compare_digest(token.encode("utf-8"), SESSION_TOKEN.encode("utf-8"))
+        except (AttributeError, TypeError):
+            return False
 
     def _body(self) -> dict:
         try:
@@ -310,6 +313,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/test-site":
             which = (body.get("site") or "").strip()
+            if which == "cex":
+                try:
+                    cfg = core.load_config()
+                    found = core.CexClient(cfg).search("macbook", max_price=5000, limit=3,
+                                                       grades=cfg.get("cex_grades") or None)
+                    detail = (f"Connected - {len(found)} test results, e.g. "
+                              f"{core.normalise_cex(found[0], cfg)['title'][:50]}"
+                              if found else "Connected, but the test search found nothing.")
+                    core.log(f"CeX test: {detail}")
+                    return self._send(200, {"ok": bool(found), "detail": detail})
+                except Exception as exc:
+                    core.log(f"CeX test failed: {exc}")
+                    return self._send(200, {"ok": False, "detail": str(exc)[:220]})
             if which in ("ebay", "ebay_refurbished", "ebay_auctions"):
                 cid, secret = core.credentials()
                 if not cid or not secret:
@@ -336,11 +352,10 @@ class Handler(BaseHTTPRequestHandler):
             with CONFIG_LOCK:
                 cfg = core.load_config()
                 sites = dict(cfg.get("sites") or {"ebay": True})
-                for key in ("ebay", "ebay_refurbished", "ebay_auctions"):
+                for key in SITE_KEYS:
                     if key in body:
                         sites[key] = bool(body[key])
-                if not any(sites.get(k) for k in
-                           ("ebay", "ebay_refurbished", "ebay_auctions")):
+                if not any(sites.get(k) for k in SITE_KEYS):
                     return self._send(200, {"ok": False,
                                             "error": "Keep at least one source switched on."})
                 cfg["sites"] = sites
@@ -366,6 +381,8 @@ class Handler(BaseHTTPRequestHandler):
 # --------------------------------------------------------------------------- #
 
 CONFIG_LOCK = threading.Lock()
+
+SITE_KEYS = ("ebay", "ebay_refurbished", "ebay_auctions", "cex")
 
 NUMERIC_WATCH_FIELDS = {
     "max_price": (1, 100000),
@@ -413,21 +430,23 @@ def update_watch(body: dict) -> dict:
     return {"ok": True, "watch": target}
 
 
+# field -> (low, high, type). Whole-number fields stay whole numbers, so
+# config.json doesn't fill up with "20.0".
 ALLOWED_SETTINGS = {
-    "poll_interval_minutes": (5, 1440),
-    "min_seller_feedback_pct": (0, 100),
-    "min_seller_feedback_score": (0, 100000),
-    "baseline_max_age_hours": (1, 168),
+    "poll_interval_minutes": (5, 1440, int),
+    "min_seller_feedback_pct": (0, 100, float),
+    "min_seller_feedback_score": (0, 100000, int),
+    "baseline_max_age_hours": (1, 168, int),
 }
 
 
 def update_settings(body: dict) -> dict:
     with CONFIG_LOCK:
         cfg = core.load_config()
-        for field, (lo, hi) in ALLOWED_SETTINGS.items():
+        for field, (lo, hi, kind) in ALLOWED_SETTINGS.items():
             if field in body:
                 try:
-                    value = float(body[field])
+                    value = kind(float(body[field]))
                 except (TypeError, ValueError):
                     return {"ok": False, "error": f"'{field}' must be a number."}
                 cfg[field] = max(lo, min(hi, value))

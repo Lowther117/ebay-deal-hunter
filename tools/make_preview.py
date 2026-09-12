@@ -48,7 +48,7 @@ def build(out_path: Path) -> Path:
         "min_seller_feedback_pct": cfg.get("min_seller_feedback_pct", 90),
         "min_seller_feedback_score": cfg.get("min_seller_feedback_score", 5),
         "has_keys": True,          # suppresses the "add your keys" prompt
-        "sites": cfg.get("sites", {"ebay": True, "cex": False}),
+        "sites": cfg.get("sites", {"ebay": True}),
         "data_dir": "", "version": "snapshot",
     }
 

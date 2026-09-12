@@ -140,6 +140,7 @@ PAGE = r"""<!DOCTYPE html>
          border: 1px solid var(--border); color: var(--text-secondary); }
   .src.ebayauction { border-color: var(--warning); color: var(--warning); }
   .src.ebayrefurb { border-color: var(--good); color: var(--good); }
+  .src.cex { border-color: var(--critical); color: var(--critical); }
 
   /* ---- cards / panels ---- */
   .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
@@ -245,7 +246,8 @@ PAGE = r"""<!DOCTYPE html>
     <div class="card">
       <h3>eBay API keys</h3>
       <div class="cap">Free from developer.ebay.com — you want the <strong>Production</strong>
-        keyset, not Sandbox. Stored only on this machine.</div>
+        keyset, not Sandbox. Stored only on this machine. CeX needs no keys; without these,
+        eBay is skipped and CeX finds are shown without a market comparison.</div>
       <div class="field">
         <label for="cid">App ID (Client ID)</label>
         <input type="text" id="cid" placeholder="Yourname-appname-PRD-xxxxxxxxx-xxxxxxxx" autocomplete="off" spellcheck="false">
@@ -264,10 +266,10 @@ PAGE = r"""<!DOCTYPE html>
       <div class="cap">Everything stays UK-only regardless — no import fees.</div>
       <div id="siteToggles"></div>
       <div class="meta" style="margin-top:10px">
-        Sites without a usable public API (Gumtree, Facebook Marketplace, Shpock, Vinted)
-        appear as one-click search buttons on each watch instead. Scraping them would
-        break within weeks and breaches their terms; a link that opens the right search
-        does not.
+        Sites that can't be searched from here — Vinted (bot-blocked), Facebook Marketplace
+        (needs a login), Gumtree, Back Market, musicMagpie and the rest — appear as
+        one-click search buttons on each watch instead. Scraping them would break within
+        weeks and breaches their terms; a link that opens the right search does not.
       </div>
     </div>
 
@@ -641,10 +643,15 @@ function fillSettings() {
     $("cid").placeholder = s.has_keys ? "•••••••• saved" : "Yourname-appname-PRD-xxxxxxxxx-xxxxxxxx";
     $("csec").placeholder = s.has_keys ? "•••••••• saved" : "PRD-xxxxxxxxxxxx-xxxx-xxxx-xxxx";
   }
-  $("interval").value = s.poll_interval_minutes ?? 20;
-  $("qmode").value = s.quality_mode || "balanced";
-  $("fbpct").value = s.min_seller_feedback_pct ?? 90;
-  $("fbscore").value = s.min_seller_feedback_score ?? 5;
+  // A scan finishing mid-edit used to overwrite whatever was being typed.
+  const focus = document.activeElement;
+  const editing = focus && $("panel-settings").contains(focus) && /^(INPUT|SELECT)$/.test(focus.tagName);
+  if (!editing) {
+    $("interval").value = s.poll_interval_minutes ?? 20;
+    $("qmode").value = s.quality_mode || "balanced";
+    $("fbpct").value = s.min_seller_feedback_pct ?? 90;
+    $("fbscore").value = s.min_seller_feedback_score ?? 5;
+  }
   $("paths").textContent = "Version " + (s.version || "") + " · data stored in " + (s.data_dir || "");
   $("btnQuit").hidden = !s.browser_mode;
 
@@ -656,6 +663,8 @@ function fillSettings() {
       d: "eBay's own graded programme: Certified, Excellent, Very Good and Good. Only qualified sellers and brand outlets can list here and every item carries a warranty, so the condition guesswork is skipped. Priced higher than a private sale, so the discount bar drops 15 points to account for the warranty." },
     { k: "ebay_auctions", n: "eBay UK — auctions ending soon",
       d: "Auctions closing within the next 12 hours, priced on the current bid rather than the start price. This is where things genuinely go under value — but the price can still climb before it ends." },
+    { k: "cex", n: "CeX — online stock",
+      d: "Searched through the stock index CeX's own website uses. No keys needed. Every box is tested, graded A/B/C and carries CeX's 24-month warranty, so the condition guesswork is skipped and the discount bar drops 15 points, as for eBay Refurbished. Only stock that can be bought online is shown; local stores that also have it are named on the row. Add CeX's delivery charge as cex_delivery_charge in config.json if you want totals to include it." },
   ].map(s2 => `
     <div class="wrow" style="grid-template-columns:44px 1fr auto;border:none;padding:8px 0">
       <button class="toggle" aria-pressed="${!!sites[s2.k]}" data-site="${s2.k}"></button>
@@ -726,8 +735,9 @@ function applyStatus(st) {
     b.innerHTML = `<div class="banner bad"><strong>Scan problem.</strong> ${esc(st.last_error)}</div>`;
   } else if (DATA.settings && DATA.settings.has_keys === false) {
     b.innerHTML = `<div class="banner"><strong>No eBay API keys yet.</strong>
-      Add them under Settings and this starts finding real listings — it takes about
-      ten minutes to get them. Until then, "Load demo data" shows how it looks.</div>`;
+      CeX can be scanned without them, but eBay listings and the market comparison
+      need them — about ten minutes to get from developer.ebay.com, under Settings.
+      "Load demo data" shows how it looks in the meantime.</div>`;
   } else b.innerHTML = "";
 }
 

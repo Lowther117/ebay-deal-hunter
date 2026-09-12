@@ -3,6 +3,11 @@ eBay Deal Hunter - scanning engine.
 
 Pure standard library. Knows nothing about the GUI: it finds listings, judges
 their condition, scores them against the UK market, and stores the results.
+
+Sources: eBay UK (Buy It Now, Refurbished, auctions ending soon) through the
+official Browse API, and CeX through the stock-search service its own website
+uses. Everything after fetching - the UK check, condition gates, scoring and
+storage - is shared, so a listing is judged the same way wherever it came from.
 """
 
 from __future__ import annotations
@@ -27,7 +32,24 @@ EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope"
 
-USER_AGENT = "ebay-deal-hunter/2.0 (personal use)"
+USER_AGENT = "ebay-deal-hunter/2.3 (personal use)"
+
+# CeX searches its stock through Algolia, reached via a proxy on CeX's own
+# domain with a search-only key that every visitor's browser is handed (it can
+# read the index and nothing else). These values were read from uk.webuy.com
+# in September 2026 - its appsettings call returns them as algoliaAppId,
+# algoliaSearchAppKey and algoliaIndexName. If CeX rotates the key, the Test
+# button on the Settings tab says so; put the new values in config.json as
+# cex_app_id / cex_api_key / cex_index and nothing else needs to change.
+CEX_SEARCH_HOST = "https://search.webuy.io"
+CEX_APP_ID = "LNNFEEWZVA"
+CEX_API_KEY = "bf79f2b6699e60a18ae330a1248b452c"
+CEX_INDEX = "prod_cex_uk"
+CEX_PRODUCT_URL = "https://uk.webuy.com/product-detail?id="
+# The search proxy sits behind Cloudflare, which is happier with a browser-shaped
+# request than a bare Python one.
+CEX_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
 
 # Replaced by the app so log lines reach the UI as well as the console.
 LOG_SINK = None
@@ -117,10 +139,17 @@ DEFAULT_CONFIG = {
     ],
     "auction_ending_within_hours": 12,
     "refurbished_discount_allowance": 15,
+    # CeX: which grades to accept (A best, C most worn - all three are tested
+    # and carry the same warranty), what to add for delivery so totals are
+    # honest, and which stores count as local (shown when they have it in).
+    "cex_grades": ["A", "B", "C"],
+    "cex_delivery_charge": 0.0,
+    "cex_local_stores": ["Merthyr Tydfil", "Pontypridd"],
     "sites": {
         "ebay": True,
         "ebay_refurbished": True,
         "ebay_auctions": True,
+        "cex": True,
     },
     "watches": [],
 }
@@ -173,7 +202,7 @@ def is_auth_error(exc: Exception) -> bool:
     return "invalid_client" in text or "unauthorized" in text
 
 
-def _open(req, timeout):
+def _open(req, timeout, label="eBay"):
     """urlopen with one retry on a dropped connection or DNS blip.
 
     A second failure is treated as no network at all: without this a scan of
@@ -187,14 +216,14 @@ def _open(req, timeout):
             try:
                 return json.loads(raw.decode("utf-8"))
             except ValueError as exc:
-                raise EbayError("eBay replied with something that wasn't JSON "
+                raise EbayError(f"{label} replied with something that wasn't JSON "
                                 f"({raw[:80]!r}).") from exc
         except urllib.error.HTTPError:
             raise
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             if attempt == 2:
                 reason = getattr(exc, "reason", exc)
-                raise EbayError(f"Network problem reaching eBay: {reason}", fatal=True) from exc
+                raise EbayError(f"Network problem reaching {label}: {reason}", fatal=True) from exc
             time.sleep(2)
 
 
@@ -420,8 +449,16 @@ def title_blocked(title: str, excludes: list[str]) -> str | None:
 
 
 def title_has_all(title: str, required: list[str]) -> bool:
-    low = title.lower()
-    return all(term.lower().strip() in low for term in required if term.strip())
+    """Every required term appears as a whole word. A plain substring test let
+    "tb" pass on "portable" and "ssd" on nothing useful - whole words only."""
+    low = f" {title.lower()} "
+    for term in required:
+        t = term.lower().strip()
+        if not t:
+            continue
+        if not re.search(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", low):
+            return False
+    return True
 
 
 # Whole words only. "un" as a prefix used to be in here, which meant "Arduino
@@ -561,7 +598,7 @@ def build_filters(watch: dict, cfg: dict, *, for_baseline: bool) -> list[str]:
 # Titles that give away an overseas seller using a UK-looking listing.
 IMPORT_TELLS = [
     "import", "imported", "customs", "duty free", "ships from china",
-    "ship from china", "from china", "from usa", "from us", "from hong kong",
+    "ship from china", "from china", "from usa", "from the usa", "from hong kong",
     "us seller", "china post", "aliexpress", "japan import", "jp import",
     "us plug", "eu plug", "us version", "japanese version", "110v", "120v",
     "no uk plug", "adapter needed",
@@ -801,18 +838,8 @@ def compute_baseline(client, conn, watch, cfg, excludes) -> float | None:
     return median
 
 
-def scan_watch(client, conn, watch, cfg) -> tuple[int, int]:
-    name = watch["name"]
-    excludes = list(cfg["global_exclude_terms"]) + list(watch.get("exclude_terms") or [])
-    required = watch.get("require_terms") or []
-    min_disc = watch.get("min_discount_pct", 0)
-    min_pct = watch.get("min_seller_feedback_pct", cfg["min_seller_feedback_pct"])
-    min_score = watch.get("min_seller_feedback_score", cfg["min_seller_feedback_score"])
-    mode = watch.get("quality_mode", cfg.get("quality_mode", "balanced"))
-
-    log(f"- {name}: '{watch['query']}' up to {cfg['currency']} {watch.get('max_price', '-')}")
-    baseline = compute_baseline(client, conn, watch, cfg, excludes)
-
+def scan_watch(client, conn, watch, cfg, baseline) -> tuple[int, int]:
+    """eBay Buy It Now - the main source."""
     filters = build_filters(watch, cfg, for_baseline=False)
     try:
         raw = client.search(
@@ -940,6 +967,184 @@ def scan_watch_auctions(client, conn, watch, cfg, baseline) -> tuple[int, int]:
     return process_records(conn, watch, cfg, records, baseline, "eBay auction")
 
 
+# --------------------------------------------------------------------------- #
+# CeX
+# --------------------------------------------------------------------------- #
+
+class CexError(RuntimeError):
+    """A CeX problem never stops the eBay half of a scan. `fatal` means CeX is
+    switched off for the rest of this scan (refused, rate limited, no network)
+    rather than failing the same way on every watch."""
+
+    def __init__(self, message: str, code: int | None = None, fatal: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.fatal = fatal
+
+
+def cex_queries(query: str) -> list[str]:
+    """Turn an eBay-style query into the searches CeX's index understands.
+
+    eBay reads "thinkpad t480 OR t490" as alternatives; Algolia would look for
+    the word "or". So each alternative becomes its own search and the results
+    are merged. Symbols eBay tolerates are dropped too.
+    """
+    out = []
+    for part in re.split(r"\s+OR\s+", query, flags=re.I):
+        part = re.sub(r"[^\w\s.+-]", " ", part)
+        part = re.sub(r"\s+", " ", part).strip()
+        if part and part.lower() not in (p.lower() for p in out):
+            out.append(part)
+    return out[:6]
+
+
+class CexClient:
+    """Read-only search against the index behind uk.webuy.com."""
+
+    def __init__(self, cfg: dict):
+        self.host = (cfg.get("cex_search_host") or CEX_SEARCH_HOST).rstrip("/")
+        self.app_id = cfg.get("cex_app_id") or CEX_APP_ID
+        self.api_key = cfg.get("cex_api_key") or CEX_API_KEY
+        self.index = cfg.get("cex_index") or CEX_INDEX
+
+    def search(self, query: str, *, min_price=0, max_price=None, limit: int = 100,
+               grades=None, online_only: bool = True) -> list[dict]:
+        numeric = ["boxVisibilityOnWeb=1", "boxWebBuyAllowed=1"]
+        if online_only:
+            numeric.append("inStockOnline=1")   # collection-only stock can't be bought online
+        if min_price:
+            numeric.append(f"sellPrice>={int(min_price)}")
+        if max_price:
+            numeric.append(f"sellPrice<={int(max_price)}")
+        params = {
+            "query": query,
+            "hitsPerPage": max(1, min(int(limit or 100), 1000)),
+            "page": 0,
+            "numericFilters": numeric,
+            "attributesToRetrieve": ["objectID", "boxName", "sellPrice", "Grade",
+                                     "categoryFriendlyName", "imageUrls", "stores",
+                                     "inStockOnline", "ecomQuantity", "priceLastChanged"],
+            "attributesToHighlight": [],
+        }
+        if grades:
+            params["facetFilters"] = [[f"Grade:{g}" for g in grades]]   # inner list = OR
+        req = urllib.request.Request(
+            f"{self.host}/1/indexes/{self.index}/query",
+            data=json.dumps(params).encode("utf-8"),
+            headers={
+                "x-algolia-application-id": self.app_id,
+                "x-algolia-api-key": self.api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": "https://uk.webuy.com",
+                "Referer": "https://uk.webuy.com/",
+                "User-Agent": CEX_USER_AGENT,
+            },
+        )
+        try:
+            payload = _open(req, timeout=30, label="CeX")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            if exc.code in (401, 403):
+                raise CexError(f"CeX search refused the request (HTTP {exc.code}). Its search "
+                               f"key may have changed - see the README. CeX said: {detail}",
+                               code=exc.code, fatal=True) from exc
+            if exc.code == 429:
+                raise CexError("CeX search rate limit hit - back off and try later.",
+                               code=429, fatal=True) from exc
+            raise CexError(f"CeX search failed (HTTP {exc.code}): {detail}", code=exc.code) from exc
+        except EbayError as exc:      # _open's network failure, relabelled
+            raise CexError(str(exc), fatal=exc.fatal) from exc
+        if not isinstance(payload, dict) or "hits" not in payload:
+            raise CexError(f"CeX search gave an unexpected reply: {str(payload)[:120]}")
+        return payload.get("hits") or []
+
+
+def _first(value) -> str:
+    """CeX stores most attributes as one-element lists."""
+    if isinstance(value, list):
+        return str(value[0]) if value else ""
+    return "" if value is None else str(value)
+
+
+def normalise_cex(hit: dict, cfg: dict) -> dict:
+    grade = _first(hit.get("Grade")).strip().upper()
+    price = money(hit.get("sellPrice"))
+    delivery = money(cfg.get("cex_delivery_charge") or 0)
+    stocked = hit.get("stores") or []
+    local = [s for s in (cfg.get("cex_local_stores") or []) if s in stocked]
+    location = "CeX online" + (f" - also in {', '.join(local)}" if local else "")
+    images = hit.get("imageUrls") or {}
+    image = images.get("large") or images.get("medium") or images.get("small") or ""
+    if image:
+        # Category folders have spaces in them ("Laptops - Apple Mac").
+        image = urllib.parse.quote(image, safe=":/?=&%")
+    box = str(hit.get("objectID") or "")
+    return {
+        "country": "GB",
+        "bid_count": 0,
+        "is_auction": False,
+        "ends": "",
+        "item_id": f"cex-{box}",
+        "title": (hit.get("boxName") or "").strip(),
+        "price": price,
+        "shipping": delivery,
+        "total": round(price + delivery, 2),
+        "currency": "GBP",
+        "free_shipping": delivery == 0.0,
+        "condition": f"CeX grade {grade}" if grade else "CeX tested",
+        "url": CEX_PRODUCT_URL + urllib.parse.quote(box),
+        "image": image,
+        "seller_name": "CeX",
+        "seller_pct": 100.0,
+        "seller_score": 0,
+        "location": location,
+        "buying_options": "FIXED_PRICE",
+        "categories": hit.get("categoryFriendlyName") or "",
+        "trusted_source": True,
+        "quality_why": (f"grade {grade} - " if grade else "")
+                       + "CeX tested stock, 24-month warranty",
+    }
+
+
+def scan_watch_cex(client: CexClient, conn, watch, cfg, baseline) -> tuple[int, int]:
+    """
+    The same hunt on CeX's online stock.
+
+    Every box is tested and warrantied, so the condition guesswork is skipped
+    like it is for eBay Refurbished, and the discount bar drops by the same
+    allowance - shop prices sit above private sales, and the warranty is what
+    you pay for. Prices are scored against the eBay market median when there
+    is one, so "under market" means under what the same thing fetches used.
+    """
+    allowance = int(cfg.get("refurbished_discount_allowance", 15) or 0)
+    relaxed = dict(watch)
+    relaxed["min_discount_pct"] = max(0, watch.get("min_discount_pct", 0) - allowance)
+
+    seen = set()
+    records = []
+    for q in cex_queries(watch["query"]):
+        hits = client.search(
+            q,
+            min_price=watch.get("min_price", 0),
+            max_price=watch.get("max_price"),
+            limit=watch.get("result_limit", 100),
+            grades=cfg.get("cex_grades") or None,
+        )
+        for hit in hits:
+            rec = normalise_cex(hit, cfg)
+            if not rec["item_id"] or rec["item_id"] in seen:
+                continue
+            seen.add(rec["item_id"])
+            records.append(rec)
+        time.sleep(0.2)  # be polite
+
+    if not records:
+        log("  [CeX] nothing in stock online for this watch")
+        return 0, 0
+    return process_records(conn, relaxed, cfg, records, baseline, "CeX")
+
+
 def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, int]:
     """
     Filter, judge and store a batch of listings from any site.
@@ -971,10 +1176,17 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
             non_uk += 1
             continue
 
-        if rec.get("trusted_source"):
+        trusted = bool(rec.get("trusted_source"))
+        if trusted:
             # A shop that tests and warranties its stock has already answered
             # the condition question - don't second-guess it on wording alone.
-            verdict, why = "working", rec.get("quality_why", f"{source} tested stock")
+            # The "not actually the item" words still apply though: a charger
+            # or a case turns up for "macbook" at CeX just as it does on eBay.
+            hit = title_blocked(rec["title"], excludes)
+            if hit:
+                verdict, why = "reject", f"title says '{hit}'"
+            else:
+                verdict, why = "working", rec.get("quality_why", f"{source} tested stock")
         else:
             verdict, why = assess_quality(rec, watch, cfg, excludes)
         if not quality_allows(verdict, mode):
@@ -984,10 +1196,12 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
             continue
         if cap and rec["total"] > cap:
             continue
-        if rec["seller_pct"] and rec["seller_pct"] < min_pct:
-            continue
-        if rec["seller_score"] < min_score:
-            continue
+        if not trusted:
+            # Feedback is an eBay idea. A shop is judged by its returns policy.
+            if rec["seller_pct"] and rec["seller_pct"] < min_pct:
+                continue
+            if rec["seller_score"] < min_score:
+                continue
 
         discount = None
         if baseline:
@@ -998,7 +1212,7 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
         flags = []
         if discount is not None and discount >= 90:
             flags.append("too-good-to-be-true")
-        if rec["seller_score"] < 25:
+        if not trusted and rec["seller_score"] < 25:
             flags.append("low-feedback-seller")
         if rec["shipping"] > rec["price"]:
             flags.append("postage-heavy")
@@ -1277,40 +1491,55 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None):
         use_ebay = bool(sites_cfg.get("ebay", True))
         use_refurb = bool(sites_cfg.get("ebay_refurbished", True))
         use_auctions = bool(sites_cfg.get("ebay_auctions", True))
+        use_cex = bool(sites_cfg.get("cex", False))
 
-        client_id, client_secret = credentials()
-        if not client_id or not client_secret:
+        if not (use_ebay or use_refurb or use_auctions or use_cex):
             return {"ok": False, "scanned": 0, "new_hits": 0,
-                    "error": "No eBay API keys saved yet - add them in Settings."}
-        client = EbayClient(client_id, client_secret, cfg["marketplace"])
+                    "error": "Every source is switched off - turn one on in Settings."}
+
+        # eBay needs keys; CeX does not. Without keys the eBay sources are
+        # skipped for this scan rather than the whole scan refusing to run.
+        client = None
+        if use_ebay or use_refurb or use_auctions:
+            client_id, client_secret = credentials()
+            if client_id and client_secret:
+                client = EbayClient(client_id, client_secret, cfg["marketplace"])
+            elif use_cex:
+                log("No eBay API keys saved - searching CeX only this time. "
+                    "Add the keys in Settings for eBay and for market prices.")
+                use_ebay = use_refurb = use_auctions = False
+            else:
+                return {"ok": False, "scanned": 0, "new_hits": 0,
+                        "error": "No eBay API keys saved yet - add them in Settings."}
+        cex = CexClient(cfg) if use_cex else None
 
         active = [n for n, on in (("Buy It Now", use_ebay),
                                   ("Refurbished", use_refurb),
-                                  ("auctions", use_auctions)) if on]
-        if not active:
-            return {"ok": False, "scanned": 0, "new_hits": 0,
-                    "error": "Every source is switched off - turn one on in Settings."}
+                                  ("auctions", use_auctions),
+                                  ("CeX", use_cex)) if on]
         total = len(watches)
         log(f"Scanning {total} watch(es), UK only, via {' + '.join(active)}.")
 
         for i, watch in enumerate(watches, 1):
             if progress:
                 progress(i - 1, total, watch["name"])
+            log(f"- {watch['name']}: '{watch['query']}' up to "
+                f"{cfg['currency']} {watch.get('max_price', '-')}")
 
             try:
-                if use_ebay:
-                    kept, new = scan_watch(client, conn, watch, cfg)
-                    scanned += kept
-                    new_hits += new
-
-                # Every source after the first reuses the market median the Buy
-                # It Now pass worked out, so it costs one API call, not two.
+                # One market median per watch, worked out once and shared by
+                # every source - so it costs one API call, not one per source.
                 baseline = latest_baseline(conn, watch["name"],
                                            cfg["baseline_max_age_hours"])
-                if baseline is None and (use_refurb or use_auctions):
+                if baseline is None and client is not None:
                     excludes = (list(cfg["global_exclude_terms"])
                                 + list(watch.get("exclude_terms") or []))
                     baseline = compute_baseline(client, conn, watch, cfg, excludes)
+
+                if use_ebay:
+                    kept, new = scan_watch(client, conn, watch, cfg, baseline)
+                    scanned += kept
+                    new_hits += new
 
                 if use_refurb:
                     kept, new = scan_watch_refurbished(client, conn, watch, cfg, baseline)
@@ -1326,6 +1555,17 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None):
                 if is_auth_error(exc):
                     return {"ok": False, "scanned": scanned, "new_hits": new_hits,
                             "error": str(exc)}
+
+            if cex is not None:
+                try:
+                    kept, new = scan_watch_cex(cex, conn, watch, cfg, baseline)
+                    scanned += kept
+                    new_hits += new
+                except CexError as exc:
+                    log(f"  ! {exc}")
+                    if exc.fatal:
+                        log("  CeX switched off for the rest of this scan.")
+                        cex = None
 
         if progress:
             progress(total, total, "")
@@ -1682,7 +1922,10 @@ STARTER_CONFIG = {
     "import_tells": IMPORT_TELLS,
     "auction_ending_within_hours": 12,
     "refurbished_discount_allowance": 15,
-    "sites": {"ebay": True, "ebay_refurbished": True, "ebay_auctions": True},
+    "cex_grades": DEFAULT_CONFIG["cex_grades"],
+    "cex_delivery_charge": DEFAULT_CONFIG["cex_delivery_charge"],
+    "cex_local_stores": DEFAULT_CONFIG["cex_local_stores"],
+    "sites": {"ebay": True, "ebay_refurbished": True, "ebay_auctions": True, "cex": True},
     "watches": WATCH_CATALOGUE,
 }
 

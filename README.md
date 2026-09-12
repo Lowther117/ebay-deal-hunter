@@ -8,12 +8,12 @@ shows them in a proper app window on your Mac and your Windows PC.
   never reach you
 - Scores every find against the **median price of comparable live listings**
 - **43 watches across 10 categories**, each switchable on or off from the app
-- **Three searchable sources**: eBay Buy It Now, eBay Refurbished (warrantied), and
-  eBay auctions ending soon
-- **Nine one-click sites**, picked for reputation: Back Market, CeX, musicMagpie,
-  Amazon Warehouse, Cash Converters and more
+- **Four searchable sources**: eBay Buy It Now, eBay Refurbished (warrantied),
+  eBay auctions ending soon, and CeX's online stock (tested, graded, 24-month warranty)
+- **Ten one-click sites**, picked for reputation: Back Market, CeX, musicMagpie,
+  Amazon Warehouse, Cash Converters, Vinted and more
 - The engine is pure Python standard library — no database server, no cloud, nothing
-  leaves your machine except the eBay API calls
+  leaves your machine except the eBay API calls and the CeX stock searches
 
 ---
 
@@ -62,6 +62,10 @@ To make it a real double-clickable app, see *Building* below.
 5. In the app: **Settings → eBay API keys → Save keys**.
 
 No approval wait, no cost. The daily limit is 5,000 calls; this app uses a few hundred.
+
+CeX needs no keys at all. Without eBay keys the app still scans CeX, but the eBay
+sources are skipped and CeX finds show *no baseline* — the market comparison comes
+from eBay's live listings, so it needs the keys too.
 
 ---
 
@@ -130,7 +134,7 @@ site, or search. Click any row to open that listing in your browser.
 **Watches** — every watch with a toggle, a price cap, a minimum discount and a
 condition setting. Changes save immediately. **Scan** runs just that one.
 **Search other sites…** opens the same hunt on Back Market, CeX, musicMagpie, Amazon
-Warehouse, Cash Converters, Gumtree or Facebook Marketplace.
+Warehouse, Cash Converters, Vinted, Gumtree or Facebook Marketplace.
 
 **Settings** — API keys, which sites to search, scan interval, condition strictness,
 seller quality floor, and a live activity log.
@@ -231,21 +235,47 @@ the table beside eBay's, judged and scored identically.
   private used sale, so the discount bar drops 15 points to account for the warranty —
   change that with `refurbished_discount_allowance` in config.json.
 
-CeX was removed in 2.2. Its listings came from the JSON endpoint its own website uses,
-which is not a supported public API, and it refused our requests. The CeX *shop* is
-still one of the best places to buy tested second-hand kit in the UK, so it stays as a
-one-click link — that always works, because it is just a search page.
+- **CeX — online stock** — on by default, back in 2.3. CeX's website searches its
+  stock through Algolia, via a proxy on CeX's own domain, using a search-only key
+  that every visitor's browser is handed. That key can read the index and nothing
+  else, and it doesn't need a login, so the app uses it too — one small request per
+  watch. Every box is tested, graded A/B/C and carries CeX's 24-month warranty, so
+  it is treated like eBay Refurbished: the condition guesswork is skipped (the
+  "not actually the item" words still apply, so chargers and cases for "macbook"
+  are dropped), and the discount bar drops by the same 15 points. Only stock that
+  can be bought online is shown; if a local store also has it, the row says so.
 
-**Quick links** — Gumtree, Facebook Marketplace, Shpock, Vinted, Music Magpie, Back
-Market, Cash Converters, Amazon Warehouse and Preloved have no usable public API. The app builds the equivalent search URL, with your price cap applied where
-the site supports it, and opens it in your browser. Scraping them would break within
-weeks, get the machine blocked, and breaches their terms; a link that opens the right
-search does neither and never breaks.
+  Three things to know. It is the site's own search backend, not a published API:
+  if CeX rotates the key, **Test** on the Settings tab says "refused", and the new
+  values go in `config.json` as `cex_app_id`, `cex_api_key` and `cex_index` (they are
+  in the `appsettings` call the site makes on load). CeX charges for delivery and
+  the app does not know the rate — set `cex_delivery_charge` in `config.json` if you
+  want totals to include it. And `cex_grades` and `cex_local_stores` are there to
+  narrow grades or name your stores; the defaults are all three grades, and
+  Merthyr Tydfil and Pontypridd.
 
-No other UK resale site publishes a usable public API — that's the honest reason the
-list stops at three rather than a lack of trying. If one ever does, adding it means
-writing a single function that returns records in the standard shape. Everything else — the UK check, condition gates,
-scoring, storage, the UI — already handles it.
+  The endpoint 2.2 tried is behind Cloudflare and refuses anything that isn't a
+  browser. The search proxy is what the site itself talks to for results, and it
+  answered a plain request without a referrer, which is why it is worth another go.
+
+**Quick links** — Back Market, musicMagpie, Amazon Warehouse, Cash Converters,
+Vinted, Gumtree and Facebook Marketplace. The app builds the equivalent search URL,
+with your price cap applied where the site supports it, and opens it in your
+browser. Scraping them would break within weeks, get the machine blocked, and
+breaches their terms; a link that opens the right search does neither and never
+breaks.
+
+Two of those were looked at properly for 2.3 and don't qualify: **Vinted**'s
+catalogue API sits behind DataDome, which returns a 403 block page to anything
+that isn't its own site's JavaScript — even a fetch from a real browser tab on
+vinted.co.uk was refused — so a Python client would be blocked within days, and
+**Facebook Marketplace** shows nothing without a signed-in account. Both are the
+"link that always works" case.
+
+If another site ever does publish something usable, adding it means writing one
+function that returns records in the standard shape (see `normalise_cex`).
+Everything else — the UK check, condition gates, scoring, storage, the UI — already
+handles it.
 
 ---
 
@@ -316,8 +346,13 @@ line. Usually a typo in a hand-edited `config.json`; the message names the file.
 timing out on every one; it retries each call once first. Auto will try again on the
 next interval.
 
-**Rate limited** — raise the scan interval in Settings. 20 minutes across ~17 watches
-is well under eBay's 5,000 calls a day.
+**Rate limited** — raise the scan interval in Settings. 20 minutes across the 26
+default watches is well under eBay's 5,000 calls a day.
+
+**"CeX search refused the request (HTTP 403)"** — either CeX has rotated its search
+key (see section 6 for where the new one lives) or its proxy has started refusing
+non-browser requests. The scan carries on with eBay; CeX is just skipped until it
+works again.
 
 ---
 
@@ -327,7 +362,7 @@ is well under eBay's 5,000 calls a day.
 app.py                  entry point - window, CLI, self-test, crash net
 dealhunter/
   core.py               the engine: search, condition judging, scoring, storage
-  sites.py              the curated quick-link list for other sites
+  sites.py              the curated quick-link list for other sites (CeX search itself is in core.py)
   server.py             local HTTP server and JSON API
   ui.py                 the interface, one self-contained page
   paths.py              per-platform data folder

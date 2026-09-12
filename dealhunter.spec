@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Deal Hunter"
-APP_VERSION = "2.0.0"
 BUNDLE_ID = "uk.lowther.dealhunter"
 
 IS_MAC = sys.platform == "darwin"
@@ -29,6 +28,12 @@ IS_WIN = sys.platform.startswith("win")
 # SPECPATH is injected by PyInstaller; fall back to cwd for plain linting.
 ROOT = Path(globals().get("SPECPATH", os.path.abspath(".")))
 ASSETS = ROOT / "assets"
+
+# One version number, kept in dealhunter/__init__.py - read it rather than
+# carrying a second copy here that drifts (it had: 2.0.0 against 2.2.0).
+import re
+_m = re.search(r'__version__\s*=\s*"([^"]+)"', (ROOT / "dealhunter" / "__init__.py").read_text())
+APP_VERSION = _m.group(1) if _m else "0.0.0"
 
 # --------------------------------------------------------------------------
 # Icon: .icns on macOS, .ico on Windows. Anything else (Linux) gets no icon.
@@ -121,7 +126,7 @@ if IS_WIN:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=True,
+        upx=False,
         upx_exclude=[],
         runtime_tmpdir=None,
         console=False,          # windowed - no console window
@@ -144,7 +149,7 @@ else:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=True,
+        upx=False,
         console=False,          # windowed - no terminal
         disable_windowed_traceback=False,
         argv_emulation=False,
@@ -159,7 +164,7 @@ else:
         a.binaries,
         a.datas,
         strip=False,
-        upx=True,
+        upx=False,
         upx_exclude=[],
         name=APP_NAME,
     )
