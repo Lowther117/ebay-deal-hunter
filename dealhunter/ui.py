@@ -514,7 +514,7 @@ function table() {
     const src = (r.source || "eBay");
     return `<tr>
       <td>${img}</td>
-      <td><a class="title" data-i="${idx}" href="${esc(r.url)}" target="_blank"
+      <td><a class="title" data-i="${idx}" href="${esc(/^https?:\/\//i.test(r.url || "") ? r.url : "#")}" target="_blank"
              rel="noopener" title="${esc(r.url)}">${esc(r.title)}</a>${flagBadges(r.flags)}
         <div class="meta"><span class="src ${src.toLowerCase().replace(/[^a-z0-9]/g, "")}">${esc(src)}${
           r.bid_count ? " · " + r.bid_count + (r.bid_count === 1 ? " bid" : " bids") : ""}${
@@ -936,7 +936,7 @@ $("btnExport").onclick = async () => {
 $("btnDemo").onclick = async () => { await api("/api/scan", { demo: true }); activeTab = "deals"; showTab(); poll(); };
 $("btnClear").onclick = async () => {
   if (!confirm("Remove every saved listing? Watches and settings are kept.")) return;
-  await api("/api/clear"); refresh();
+  await api("/api/clear", {}); refresh();
 };
 $("btnAllOn").onclick = async () => { await setAll(true); };
 $("btnAllOff").onclick = async () => { await setAll(false); };

@@ -565,6 +565,7 @@ def build_snapshot(out_path: Path) -> Path:
         "min_seller_feedback_score": cfg.get("min_seller_feedback_score", 5),
         "has_keys": True,          # suppresses the "add your keys" prompt
         "sites": cfg.get("sites", {"ebay": True}),
+        "feed_sources": __import__("dealhunter.sources", fromlist=["x"]).FEED_SOURCE_LABELS,
         "dark": bool(cfg.get("dark", True)),
         "data_dir": "", "version": "snapshot",
     }
@@ -572,7 +573,10 @@ def build_snapshot(out_path: Path) -> Path:
     html = PAGE.replace("__TOKEN__", "static")
     html = html.replace(
         "<script>\nconst TOKEN",
-        "<script>\nconst STATIC_DATA = " + json.dumps(data, ensure_ascii=False)
+        # "</" escaped: a listing title containing </script> must not be able to
+        # close the block and run as markup in the saved file.
+        "<script>\nconst STATIC_DATA = "
+        + json.dumps(data, ensure_ascii=False).replace("</", "<\\/").replace("<!--", "<\\!--")
         + ";\nconst TOKEN",
         1,
     )

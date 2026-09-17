@@ -334,7 +334,7 @@ class EbayClient:
             if data.get("client_id") == self.client_id and data.get("expiry", 0) > time.time() + 60:
                 self._token = data["token"]
                 self._token_expiry = data["expiry"]
-        except (json.JSONDecodeError, KeyError, OSError):
+        except (ValueError, KeyError, OSError, AttributeError, TypeError):
             pass
 
     def _fetch_token(self) -> None:
@@ -738,6 +738,22 @@ NEGATION_LOOKBACK_WORDS = 3
 
 WORD_RE = re.compile(r"[a-z0-9']+")
 
+# These take an object of their own ("no box", "without charger", "no issues"),
+# so they only negate a claim they sit directly in front of - or "no longer".
+# Otherwise "no box, fully working" was thrown out as "no fully working".
+_OBJECT_NEGATORS = {"no", "without", "nothing"}
+
+
+def _negator_in(preceding: list[str]) -> str | None:
+    for i, w in enumerate(preceding):
+        if w not in NEGATORS:
+            continue
+        if (w in _OBJECT_NEGATORS and i != len(preceding) - 1
+                and preceding[i + 1] != "longer"):
+            continue
+        return w
+    return None
+
 
 def has_working_evidence(title: str, working_terms: list[str]) -> str | None:
     """
@@ -755,7 +771,7 @@ def has_working_evidence(title: str, working_terms: list[str]) -> str | None:
         pattern = r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])"
         for match in re.finditer(pattern, low):
             preceding = WORD_RE.findall(low[:match.start()])[-NEGATION_LOOKBACK_WORDS:]
-            if not any(w in NEGATORS for w in preceding):
+            if not _negator_in(preceding):
                 return term
     return None
 
@@ -775,7 +791,7 @@ def has_negated_working_claim(title: str, working_terms: list[str]) -> str | Non
         pattern = r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])"
         for match in re.finditer(pattern, low):
             preceding = WORD_RE.findall(low[:match.start()])[-NEGATION_LOOKBACK_WORDS:]
-            hit = next((w for w in preceding if w in NEGATORS), None)
+            hit = _negator_in(preceding)
             if hit and hit not in ("needs", "requires"):  # "needs charger" isn't a fault
                 return f"{hit} {term}"
     return None
@@ -1949,6 +1965,13 @@ JUNK = {
 }
 
 
+def _junk(kind, *keep):
+    """A JUNK family minus the words that describe the item itself for this
+    watch - "lcd", "screen" and "stand" are junk for a laptop search but are
+    how an ordinary monitor or TV is described, as "fan" is for a GPU."""
+    return [t for t in JUNK[kind] if t not in keep]
+
+
 def _w(name, group, query, baseline_query, max_price, min_discount=40, *,
        enabled=True, min_price=10, quality="balanced", conditions=None,
        require=None, exclude=None, note="", brands=None, cpus=None,
@@ -2064,7 +2087,7 @@ WATCH_CATALOGUE = [
        "rtx 3060 OR rtx 3070 OR rtx 4060 OR rx 6700 graphics card",
        "rtx 3060 12gb graphics card", 170, 40,
        min_price=40, quality="strict",
-       exclude=JUNK["computing"] + ["gtx 1050", "gtx 1060", "gt 710", "gt 1030",
+       exclude=_junk("computing", "fan") + ["gtx 1050", "gtx 1060", "gt 710", "gt 1030",
                                     "mining", "mined", "no fans"],
        note="Strict mode - ex-mining cards are the classic trap."),
     _w("Mini PCs & SFF desktops", "PC components",
@@ -2079,7 +2102,7 @@ WATCH_CATALOGUE = [
        "27 inch monitor 1440p OR ultrawide monitor OR 4k monitor",
        "dell 27 inch 1440p monitor", 90, 45,
        min_price=25, quality="strict",
-       exclude=JUNK["computing"] + ["dead pixel", "dead pixels", "backlight bleed",
+       exclude=_junk("computing", "screen", "lcd", "stand") + ["dead pixel", "dead pixels", "backlight bleed",
                                     "burn in", "burn-in", "no stand"],
        note="Postage is the killer here - watch for collection-only."),
     _w("Keyboards & mice", "Displays",
@@ -2182,7 +2205,7 @@ WATCH_CATALOGUE = [
     _w("TVs", "Displays",
        "43 inch OR 50 inch OR 55 inch smart tv oled OR qled", "50 inch 4k smart tv",
        200, 50, enabled=False, min_price=50, quality="strict",
-       exclude=JUNK["computing"] + ["stand only", "remote only", "cracked screen",
+       exclude=_junk("computing", "screen", "lcd", "stand") + ["stand only", "remote only", "cracked screen",
                                     "lines on screen", "no picture", "for parts"],
        note="Off by default - almost always collection only, and screens crack in transit."),
     _w("Projectors", "Displays",
