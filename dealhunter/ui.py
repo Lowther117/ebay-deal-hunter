@@ -286,6 +286,7 @@ _PAGE = r"""<!DOCTYPE html>
         <label for="interval">Automatic scan every (minutes)</label>
         <input type="number" id="interval" min="5" max="1440" step="5">
         <span class="hint">Only applies while "Auto" is switched on in the toolbar.</span>
+        <span class="hint" id="allowanceHint"></span>
       </div>
       <div class="field">
         <label for="qmode">Default condition strictness</label>
@@ -717,6 +718,16 @@ function fillSettings() {
   const editing = focus && $("panel-settings").contains(focus) && /^(INPUT|SELECT)$/.test(focus.tagName);
   if (!editing) {
     $("interval").value = s.poll_interval_minutes ?? 20;
+    const al = s.allowance;
+    if (al) {
+      let t = `eBay allows ${al.limit.toLocaleString()} searches a day. Used in the last 24 hours: `
+            + `${al.used.toLocaleString()}. A full scan costs about ${al.scan_cost.toLocaleString()}, `
+            + `and automatic scans stop at ${al.budget.toLocaleString()} so the limit can't be reached.`;
+      if (al.interval_min > al.asked_min)
+        t += ` With this many watches on, Auto runs every ${al.interval_min} minutes rather than `
+           + `${al.asked_min} - turn some watches off to scan more often.`;
+      $("allowanceHint").textContent = t;
+    }
     $("qmode").value = s.quality_mode || "balanced";
     $("fbpct").value = s.min_seller_feedback_pct ?? 90;
     $("fbscore").value = s.min_seller_feedback_score ?? 5;
@@ -808,6 +819,7 @@ function applyStatus(st) {
            : "Ready — press Scan now");
     if (!st.last_error && st.auto && st.next_auto_in != null)
       text += ` · next in ${Math.ceil(st.next_auto_in / 60)}m`;
+    if (!st.last_error && st.auto && st.auto_note) text += ` (${st.auto_note})`;
   }
   $("statusText").textContent = text;
 

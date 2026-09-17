@@ -17,6 +17,7 @@ assets/icon.icns
 config.json
 credentials.json
 .token_cache.json
+.ebay_calls.json
 hunter.log
 dashboard-snapshot.html
 .env

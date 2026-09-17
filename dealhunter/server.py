@@ -41,6 +41,7 @@ class AppState:
         self.log = deque(maxlen=400)
         self.auto = False
         self.next_auto = None
+        self.auto_note = ""
         self._stop = threading.Event()
         # Set when the app is running in a browser tab rather than its own
         # window. There is then no window to close, so the page shows a Quit
@@ -60,7 +61,7 @@ class AppState:
             return list(self.log)[-n:]
 
     # -- scanning --------------------------------------------------------- #
-    def start_scan(self, *, names=None, group=None, demo=False) -> bool:
+    def start_scan(self, *, names=None, group=None, demo=False, auto=False) -> bool:
         with self.lock:
             if self.scanning:
                 return False
@@ -77,7 +78,7 @@ class AppState:
             try:
                 cfg = core.load_config()
                 result = core.scan_all(cfg, conn, names=names, group=group,
-                                       demo=demo, progress=progress)
+                                       demo=demo, progress=progress, auto=auto)
             except Exception as exc:  # never let the app die on a bad scan
                 core.log(f"Scan failed: {exc!r}")
                 result = {"ok": False, "error": str(exc), "scanned": 0, "new_hits": 0}
@@ -97,13 +98,16 @@ class AppState:
     def set_auto(self, on: bool) -> None:
         with self.lock:
             self.auto = bool(on)
+            self.auto_note = ""
             self.next_auto = time.time() + self._interval() if on else None
 
     def _interval(self) -> int:
+        """Seconds between automatic scans - the interval asked for, stretched
+        when that would spend more than the day's eBay allowance."""
         try:
-            return max(300, int(core.load_config().get("poll_interval_minutes", 20)) * 60)
+            return core.safe_auto_interval(core.load_config())[0]
         except Exception:
-            return 1200
+            return 2400
 
     def auto_loop(self) -> None:
         while not self._stop.is_set():
@@ -112,10 +116,30 @@ class AppState:
                 due = self.auto and self.next_auto and time.time() >= self.next_auto
                 busy = self.scanning
             if due and not busy:
+                # Only start a scan the allowance can pay for in full. If it
+                # cannot, wait for enough of the last 24 hours to roll off.
+                wait = 0
+                try:
+                    cfg = core.load_config()
+                    cost = core.estimated_scan_cost(cfg)
+                    if cost and all(core.credentials()):
+                        wait = core.CALLS.wait_for(cost, core.call_budget(cfg))
+                except Exception:
+                    wait = 0
+                if wait:
+                    core.log("Automatic scan held back: eBay's daily allowance is nearly "
+                             f"used ({core.CALLS.used():,} of {core.EBAY_DAILY_LIMIT:,} calls in "
+                             "the last 24 hours). Enough frees up at about "
+                             f"{core._clock(wait)}; checking again within the hour.")
+                    with self.lock:
+                        self.next_auto = time.time() + min(wait, 3600)
+                        self.auto_note = "waiting for eBay's daily allowance"
+                    continue
                 core.log("Automatic scan starting.")
-                self.start_scan()
+                self.start_scan(auto=True)
                 with self.lock:
                     self.next_auto = time.time() + self._interval()
+                    self.auto_note = ""
 
     def shutdown(self) -> None:
         self._stop.set()
@@ -132,6 +156,7 @@ class AppState:
                 "auto": self.auto,
                 "next_auto_in": max(0, int(self.next_auto - time.time()))
                                 if (self.auto and self.next_auto) else None,
+                "auto_note": self.auto_note,
                 "log": self.recent_log(),
             }
 
@@ -242,6 +267,7 @@ class Handler(BaseHTTPRequestHandler):
                 "has_keys": all(core.credentials()),
                 "sites": cfg.get("sites") or {"ebay": True},
                 "feed_sources": __import__("dealhunter.sources", fromlist=["x"]).FEED_SOURCE_LABELS,
+                "allowance": allowance(cfg),
                 "data_dir": str(DATA_DIR),
                 "config_path": str(CONFIG_PATH),
                 "version": __version__,
@@ -497,6 +523,15 @@ def update_watch(body: dict) -> dict:
 
         write_config(cfg)
     return {"ok": True, "watch": target}
+
+
+def allowance(cfg: dict) -> dict:
+    """The eBay call figures the Settings page shows."""
+    used_s, asked_s = core.safe_auto_interval(cfg)
+    return {"used": core.CALLS.used(), "limit": core.EBAY_DAILY_LIMIT,
+            "budget": core.call_budget(cfg),
+            "scan_cost": core.estimated_scan_cost(cfg),
+            "interval_min": round(used_s / 60), "asked_min": round(asked_s / 60)}
 
 
 # field -> (low, high, type). Whole-number fields stay whole numbers, so

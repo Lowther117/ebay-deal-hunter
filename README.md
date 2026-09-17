@@ -67,7 +67,9 @@ To make it a real double-clickable app, see *Building* below.
    **Production** keyset. Not Sandbox — Sandbox keys return an empty world.
 5. In the app: **Settings → eBay API keys → Save keys**.
 
-No approval wait, no cost. The daily limit is 5,000 calls; this app uses a few hundred.
+No approval wait, no cost. eBay allows 5,000 searches a day on these keys. A full scan
+with everything on costs about 120 of them, and the app counts what it spends so
+automatic scanning cannot reach the limit (see *Rate limited* under Troubleshooting).
 
 CeX needs no keys at all. Without eBay keys the app still scans CeX, but the eBay
 sources are skipped and CeX finds show *no baseline* — the market comparison comes
@@ -161,7 +163,8 @@ you pick another, with **Browse…** in the app window), a live activity log, an
 **Save snapshot**, which writes a read-only HTML copy of the dashboard there.
 
 **Scan now** runs everything switched on. **Auto** keeps scanning on the interval for
-as long as the app is open. The window is dark by default; the **Light** / **Dark**
+as long as the app is open - or less often than that if the interval would use up eBay's
+daily allowance. The window is dark by default; the **Light** / **Dark**
 button in the toolbar (or **Ctrl+D**) switches, and the choice is remembered in
 `config.json` as `dark`.
 
@@ -414,11 +417,24 @@ line. Usually a typo in a hand-edited `config.json`; the message names the file.
 timing out on every one; it retries each call once first. Auto will try again on the
 next interval.
 
-**Rate limited** — raise the scan interval in Settings. Each watch costs about three
-eBay calls per scan (the market median is cached for 12 hours), so 39 watches on is
-roughly 120 calls a scan: every 40 minutes is about 4,300 a day, under the 5,000 limit;
-every 20 minutes is not. Turn off what you don't care about, or lengthen the interval.
-CeX calls don't count against eBay's limit.
+**Rate limited / "Paused to stay inside eBay's daily allowance"** — eBay allows 5,000
+searches a day. Each watch costs about three per scan (the market median is cached for
+12 hours), so 39 watches on is roughly 120 a scan. The app counts every eBay call it
+makes over a rolling 24 hours (the count survives closing the app) and Auto is built
+so it cannot reach the limit:
+
+- The interval you set is a minimum. If it would spend more than the daily budget —
+  4,500 calls, leaving 500 spare for scans you start yourself — Auto quietly runs less
+  often: with everything on that is about every 40 minutes, however low the setting.
+  Settings shows the interval actually in use. Turn watches off to scan more often.
+- An automatic scan only starts if the budget can pay for a whole one; otherwise it
+  waits, and the status line says *waiting for eBay's daily allowance*.
+- If a scan reaches the budget part-way it stops there and says when it can carry on.
+  **Scan now** may use the spare 500, and stops 50 short of eBay's limit.
+
+The budget is `ebay_daily_call_budget` in `config.json` (100 to 4,900). If eBay itself
+ever answers 429 the scan stops at once. CeX and the other shops don't count towards any
+of this.
 
 **"CeX search refused the request (HTTP 403)"** — either CeX has rotated its search
 key (see section 6 for where the new one lives) or its proxy has started refusing

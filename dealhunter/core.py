@@ -19,6 +19,7 @@ import random
 import re
 import sqlite3
 import statistics
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -27,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import __version__
-from .paths import CONFIG_PATH, DB_PATH, TOKEN_CACHE
+from .paths import CONFIG_PATH, DATA_DIR, DB_PATH, TOKEN_CACHE
 
 EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -92,6 +93,7 @@ DEFAULT_CONFIG = {
     "marketplace": "EBAY_GB",
     "currency": "GBP",
     "poll_interval_minutes": 40,
+    "ebay_daily_call_budget": 4500,
     "open_dashboard_on_new_hits": False,
     "min_seller_feedback_pct": 90.0,
     "min_seller_feedback_score": 5,
@@ -265,6 +267,143 @@ def default_save_dir(cfg: dict | None = None) -> Path:
 # eBay API client
 # --------------------------------------------------------------------------- #
 
+# eBay allows 5,000 Browse API calls a day per keyset. Nothing here relies on
+# knowing when eBay's "day" starts: the app counts its own calls over a ROLLING
+# 24 hours and keeps that under a budget, which is under the limit whatever
+# the reset time is. Automatic scans stop at the budget (4,500 by default -
+# "ebay_daily_call_budget" in config.json, 100 to 4,900); scans you start by
+# hand may use the headroom above it, up to MANUAL_CALL_CAP.
+EBAY_DAILY_LIMIT = 5000
+MANUAL_CALL_CAP = EBAY_DAILY_LIMIT - 50
+CALL_LOG = DATA_DIR / ".ebay_calls.json"
+
+
+def call_budget(cfg: dict) -> int:
+    try:
+        n = int(cfg.get("ebay_daily_call_budget", 4500))
+    except (TypeError, ValueError):
+        n = 4500
+    return max(100, min(EBAY_DAILY_LIMIT - 100, n))
+
+
+class CallBudget:
+    """eBay calls made in the last 24 hours, kept in hourly buckets on disk so
+    the count survives closing the app."""
+
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._data = None
+
+    def _load(self) -> dict:
+        if self._data is None:
+            data = {}
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    data = raw
+            except (OSError, ValueError):
+                pass
+            hours = data.get("hours")
+            data["hours"] = ({str(k): int(v) for k, v in hours.items()
+                              if str(k).isdigit() and isinstance(v, int)}
+                             if isinstance(hours, dict) else {})
+            if not isinstance(data.get("scan_cost"), int):
+                data["scan_cost"] = 0
+            self._data = data
+        return self._data
+
+    def _save(self) -> None:
+        try:
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(json.dumps(self._data), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _live(hours: dict, now: float) -> dict:
+        # a bucket counts until its whole hour is 24 hours old - errs on the
+        # side of counting a call for slightly too long, never too short
+        return {h: n for h, n in hours.items() if (int(h) + 1) * 3600 > now - 86400}
+
+    def note(self, n: int = 1) -> None:
+        with self._lock:
+            data, now = self._load(), time.time()
+            data["hours"] = self._live(data["hours"], now)
+            key = str(int(now // 3600))
+            data["hours"][key] = data["hours"].get(key, 0) + n
+            self._save()
+
+    def used(self, now: float | None = None) -> int:
+        with self._lock:
+            return sum(self._live(self._load()["hours"], now or time.time()).values())
+
+    def wait_for(self, needed: int, budget: int, now: float | None = None) -> int:
+        """Seconds until `needed` more calls fit inside `budget` (0 = now)."""
+        now = now or time.time()
+        with self._lock:
+            live = self._live(self._load()["hours"], now)
+        used = sum(live.values())
+        if used + needed <= budget:
+            return 0
+        for h in sorted(live, key=int):          # oldest hour drops out first
+            used -= live[h]
+            if used + needed <= budget:
+                return max(60, int((int(h) + 1) * 3600 + 86400 - now) + 1)
+        return 86400
+
+    @property
+    def scan_cost(self) -> int:
+        with self._lock:
+            return self._load()["scan_cost"]
+
+    def set_scan_cost(self, n: int) -> None:
+        with self._lock:
+            self._load()["scan_cost"] = int(n)
+            self._save()
+
+
+CALLS = CallBudget(CALL_LOG)
+
+
+def estimated_scan_cost(cfg: dict) -> int:
+    """eBay calls one full scan is likely to make: what the last one really
+    made, or - before there has been one - three searches and a market median
+    for every watch that is switched on."""
+    sites = cfg.get("sites") or {"ebay": True}
+    on = sum(1 for k, d in (("ebay", True), ("ebay_refurbished", True),
+                            ("ebay_auctions", True)) if sites.get(k, d))
+    if not on:
+        return 0
+    watches = sum(1 for w in cfg.get("watches", []) if w.get("enabled", True))
+    measured = CALLS.scan_cost
+    # never below one search per source per watch, so switching more watches
+    # on is allowed for straight away rather than after the next scan
+    return max(measured, watches * on, 1) if measured else max(watches * (on + 1), 1)
+
+
+def safe_auto_interval(cfg: dict) -> tuple[int, int]:
+    """(seconds actually used between automatic scans, seconds asked for).
+
+    The interval is stretched when the one asked for would spend more than the
+    daily budget: 24 hours divided by the number of scans the budget pays for."""
+    try:
+        asked = max(300, int(cfg.get("poll_interval_minutes", 40)) * 60)
+    except (TypeError, ValueError):
+        asked = 2400
+    cost = estimated_scan_cost(cfg)
+    if cost <= 0:
+        return asked, asked
+    floor = -(-86400 * cost // call_budget(cfg))          # ceiling division
+    floor = -(-floor // 60) * 60                          # whole minutes
+    return max(asked, floor), asked
+
+
+def _clock(seconds_from_now: int) -> str:
+    return time.strftime("%H:%M", time.localtime(time.time() + seconds_from_now))
+
+
 class EbayError(RuntimeError):
     """`code` is the HTTP status when there was one. `fatal` means the rest of
     the scan cannot succeed either - bad keys, the daily rate limit, or no
@@ -323,6 +462,8 @@ class EbayClient:
         self.marketplace = marketplace
         self._token = None
         self._token_expiry = 0.0
+        self.call_cap = MANUAL_CALL_CAP     # scan_all lowers this for automatic scans
+        self.calls_made = 0
         self._load_cached_token()
 
     # -- auth ------------------------------------------------------------- #
@@ -421,6 +562,16 @@ class EbayClient:
                     "User-Agent": USER_AGENT,
                 },
             )
+            used = CALLS.used()
+            if used >= self.call_cap:
+                wait = CALLS.wait_for(1, self.call_cap)
+                raise EbayError(
+                    f"Paused to stay inside eBay's daily allowance - {used:,} of its "
+                    f"{EBAY_DAILY_LIMIT:,} calls used in the last 24 hours. "
+                    f"Scanning can carry on from about {_clock(wait)}.",
+                    code=429, fatal=True)
+            CALLS.note()
+            self.calls_made += 1
             try:
                 payload = _open(req, timeout=45)
             except urllib.error.HTTPError as exc:
@@ -1781,7 +1932,8 @@ def save_credentials(client_id: str, client_secret: str) -> None:
             pass
 
 
-def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None):
+def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None,
+             auto=False):
     """
     Run a full scan. `progress` is called with (done, total, watch_name).
     Returns a summary dict.
@@ -1816,6 +1968,8 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None):
             client_id, client_secret = credentials()
             if client_id and client_secret:
                 client = EbayClient(client_id, client_secret, cfg["marketplace"])
+                if auto:
+                    client.call_cap = call_budget(cfg)
             elif use_cex or any(extra_on.values()):
                 log("No eBay API keys saved - searching the shops and feeds only this time. "
                     "Add the keys in Settings for eBay and for market prices.")
@@ -1927,6 +2081,14 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None):
 
         if progress:
             progress(total, total, "")
+
+    if not demo and client is not None and names is None and group is None:
+        # What a full scan really costs, for pacing the automatic ones. Eased
+        # down slowly: a scan that found its market medians cached is cheaper
+        # than the next one that has to fetch them again.
+        CALLS.set_scan_cost(max(client.calls_made, int(CALLS.scan_cost * 0.9)))
+        log(f"eBay calls: {client.calls_made:,} this scan, {CALLS.used():,} of "
+            f"{EBAY_DAILY_LIMIT:,} in the last 24 hours.")
 
     if not demo:
         expire_stale(conn, cfg)
@@ -2449,6 +2611,7 @@ STARTER_CONFIG = {
     "marketplace": "EBAY_GB",
     "currency": "GBP",
     "poll_interval_minutes": 40,
+    "ebay_daily_call_budget": 4500,
     "open_dashboard_on_new_hits": False,
     "min_seller_feedback_pct": 90.0,
     "min_seller_feedback_score": 5,
