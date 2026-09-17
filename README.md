@@ -453,3 +453,7 @@ run.bat                 run from source on Windows (makes its own .venv)
 ---
 
 *Built for my own use, in collaboration with AI (Anthropic's Claude). I described the problems, made the decisions and tested the results; Claude wrote much of the code. Shared as-is — a personal fix, not a product. No support and no warranty.*
+
+## Licence
+
+MIT No Attribution (MIT-0): do whatever you like with it - no credit needed, no warranty. See `LICENSE`.
