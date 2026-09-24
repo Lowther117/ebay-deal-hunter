@@ -274,7 +274,7 @@ _PAGE = r"""<!DOCTYPE html>
       <div id="siteToggles"></div>
       <div class="meta" style="margin-top:10px">
         Sites that can't be searched from here — Vinted (bot-blocked), Facebook Marketplace
-        (needs a login), Gumtree, Back Market, musicMagpie and the rest — appear as
+        (needs a login), Gumtree, Amazon Warehouse and the rest — appear as
         one-click search buttons on each watch instead. Scraping them would break within
         weeks and breaches their terms; a link that opens the right search does not.
       </div>

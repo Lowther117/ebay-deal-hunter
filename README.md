@@ -395,7 +395,7 @@ reach it.
 `Max £` first, then drop `Under mkt %` to 25. Then read the activity log:
 
 ```
-[eBay refurb] 12 kept | 47 rejected on condition | 9 non-UK | 3 new
+[eBay refurb] 12 kept | 47 rejected on condition | 2 off-spec | 9 non-UK | 3 new
 ```
 
 A big *rejected on condition* number means the query is pulling in parts listings —
