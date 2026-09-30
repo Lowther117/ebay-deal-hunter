@@ -129,7 +129,8 @@ _PAGE = r"""<!DOCTYPE html>
   .src.ebayauction { border-color: var(--warn); color: var(--warn); }
   .src.ebayrefurb { border-color: var(--good); color: var(--good); }
   .src.cex { border-color: var(--bad); color: var(--bad); }
-  .src.backmarket, .src.musicmagpie, .src.cashconverters { border-color: var(--good); color: var(--good); }
+  .src.backmarket, .src.musicmagpie, .src.cashconverters, .src.reboxed, .src.hoxtonmacs,
+  .src.ur, .src.stockmustgo, .src.yourstores { border-color: var(--good); color: var(--good); }
   .src.hotukdeals, .src.rhardwareswapuk { border-color: var(--warn); color: var(--warn); }
 
   /* ---- cards / panels ---- */
@@ -775,6 +776,16 @@ function fillSettings() {
       d: "Refurbished phones, laptops, consoles and media, 12-month warranty, free delivery. Searched through its store's own search service; no keys. Cheapest in-stock grade is shown." },
     { k: "cashconverters", n: "Cash Converters",
       d: "High-street pawn stock, tested in store, listed nationally. Collection-only items are dropped unless the store is in your local_towns (config.json); posted items carry their postage in the total. Condition is the shop's 2–5 rating where given." },
+    { k: "reboxed", n: "Reboxed",
+      d: "Refurbished phones, tablets, watches and consoles, graded Pristine to Good. Its whole catalogue is read a few times a day and matched against your watches; the cheapest in-stock grade of each model is shown. No keys." },
+    { k: "hoxtonmacs", n: "Hoxton Macs",
+      d: "Refurbished Macs, iPads and Apple accessories from a specialist refurbisher. Read and matched the same way. No keys." },
+    { k: "ur", n: "UR",
+      d: "Refurbished phones, tablets and wearables. Read and matched the same way. No keys." },
+    { k: "stockmustgo", n: "Stock Must Go",
+      d: "Refurbished ex-business laptops and desktops — Dell, HP, Lenovo — with the full spec in every title, so the RAM, storage and CPU filters work on it. No keys." },
+    { k: "custom_stores", n: "Your stores",
+      d: "Any other Shopify shop you add to config.json as shopify_stores: [{\"name\": \"Shop name\", \"domain\": \"www.example.co.uk\"}]. Nothing is searched until you list one. Press Test to check that a shop you've added answers." },
     { k: "hukd", n: "HotUKDeals — feed",
       d: "The site's new and hot RSS feeds, matched against your watches and shown on the Feeds tab. New items from shops, not the used market — useful for spotting when new undercuts used. Add tag feeds as hukd_tags in config.json." },
     { k: "reddit_hws", n: "r/hardwareswapuk — feed",
@@ -798,6 +809,10 @@ function fillSettings() {
     { k: "backmarket", n: "Back Market", d: "Refurbished prices with a warranty." },
     { k: "musicmagpie", n: "musicMagpie", d: "Refurbished prices, cheapest in-stock grade per model." },
     { k: "cashconverters", n: "Cash Converters", d: "High-street pawn stock — the closest the shops get to private-sale prices." },
+    { k: "reboxed", n: "Reboxed", d: "Refurbished phones, tablets and consoles." },
+    { k: "hoxtonmacs", n: "Hoxton Macs", d: "Refurbished Macs and iPads." },
+    { k: "ur", n: "UR", d: "Refurbished phones and tablets." },
+    { k: "stockmustgo", n: "Stock Must Go", d: "Refurbished business laptops and desktops." },
   ].map(m => `
     <div class="wrow" style="grid-template-columns:44px 1fr;border:none;padding:8px 0">
       <button class="toggle" aria-pressed="${market[m.k] !== false}" data-market="${m.k}"></button>

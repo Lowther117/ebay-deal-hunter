@@ -11,9 +11,10 @@ shows them in a proper app window on your Mac and your Windows PC.
   Converters — and shows the **low and high** of that sample on every row
 - **68 watches across 17 categories** — tech, games, home, garden, sport, music, watches,
   collectables and the car — each switchable on or off from the app
-- **Seven searchable sources**: eBay Buy It Now, eBay Refurbished, eBay auctions
-  ending soon, CeX, Back Market, musicMagpie and Cash Converters — the shops all
-  tested, graded stock with warranties or a returns policy
+- **Eleven searchable sources**: eBay Buy It Now, eBay Refurbished, eBay auctions
+  ending soon, CeX, Back Market, musicMagpie, Cash Converters, Reboxed, Hoxton Macs,
+  UR and Stock Must Go — the shops all tested, graded stock — plus **any other
+  Shopify shop** you add by its web address
 - **Two deal feeds** on their own tab: HotUKDeals and r/hardwareswapuk, matched
   against your watches
 - **Ten one-click sites** for everything that can't be searched: Vinted, Gumtree,
@@ -354,6 +355,29 @@ the table beside eBay's, judged and scored identically.
   in `local_towns` (config.json — Merthyr Tydfil, Pontypridd, Aberdare and Cardiff by
   default), because a bargain in Torquay is not a bargain. Condition is the shop's
   2–5 rating where it gives one.
+- **Reboxed, Hoxton Macs, UR, Stock Must Go** — on by default (2.7). Four refurbishers
+  that run on Shopify: phones, tablets and consoles (Reboxed, UR), Macs and iPads
+  (Hoxton Macs) and ex-business Dell, HP and Lenovo laptops (Stock Must Go). Every
+  Shopify shop publishes its catalogue as plain JSON at `/products.json`, so rather
+  than searching each shop once per watch the app reads the whole catalogue (250
+  products a page, up to `shopify_max_pages`, 8 by default), keeps it for
+  `shop_cache_hours`, and matches every watch against it by name. Colours and grades
+  of the same model collapse to the cheapest one in stock; different capacities stay
+  as separate rows. Each has its own switch and Test button, and each is also a
+  market price source.
+- **Your stores** — any other Shopify shop. Add it to `config.json`:
+
+  ```json
+  "shopify_stores": [
+    {"name": "Shop name", "domain": "www.example.co.uk"}
+  ]
+  ```
+
+  and it is searched the same way under the **Your stores** switch; Test says
+  whether the address answers. To check a shop is on Shopify, open
+  `https://its-address/products.json` in a browser — a page of JSON means yes. Only
+  add shops you would actually buy from: their stock is treated as tested, so the
+  condition wording is not second-guessed.
 
   Shop results are cached in memory for `shop_cache_hours` (6) so an automatic scan
   every 40 minutes doesn't hit three shops with a few hundred requests each time.
@@ -498,7 +522,7 @@ works again.
 app.py                  entry point - window, CLI, self-test, crash net
 dealhunter/
   core.py               the engine: search, condition judging, scoring, storage
-  sources.py            Back Market, musicMagpie, Cash Converters, HotUKDeals, Reddit
+  sources.py            Back Market, musicMagpie, Cash Converters, Shopify stores, HotUKDeals, Reddit
   sites.py              the curated quick-link list for other sites (CeX search itself is in core.py)
   server.py             local HTTP server and JSON API
   ui.py                 the interface, one self-contained page

@@ -40,8 +40,8 @@ import urllib.request
 from datetime import datetime, timezone
 from xml.etree import ElementTree
 
-from .core import (CEX_USER_AGENT, CexError, EbayError, _open, cex_queries, money,
-                   parse_specs, title_has_all)
+from .core import (CEX_USER_AGENT, CexError, EbayError, _open, cex_queries, is_relevant, log,
+                   money, parse_specs, title_has_all)
 
 BROWSER_HEADERS = {
     "User-Agent": CEX_USER_AGENT,
@@ -312,6 +312,182 @@ def _cashconverters(watch: dict, cfg: dict) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# Shopify stores: Reboxed, Hoxton Macs, UR, Stock Must Go - and any you add
+# --------------------------------------------------------------------------- #
+#
+# Every Shopify shop publishes its catalogue as plain JSON at /products.json,
+# 250 products a page - no key, no login, and not one of the paths its
+# robots.txt asks crawlers to stay out of (the search pages are). So instead
+# of searching the shop once per watch, the whole catalogue is read once,
+# kept for shop_cache_hours, and every watch is matched against it here.
+#
+# That makes adding a shop a one-line job: any Shopify store can go in
+# config.json under "shopify_stores" as {"name": ..., "domain": ...}.
+
+SHOPIFY_STORES = {
+    "reboxed": {
+        "name": "Reboxed", "domain": "reboxed.co",
+        "why": "Reboxed refurbished stock - warranty and returns terms are on the listing",
+    },
+    "hoxtonmacs": {
+        "name": "Hoxton Macs", "domain": "www.hoxtonmacs.co.uk",
+        "why": "Hoxton Macs refurbished stock - warranty and returns terms are on the listing",
+    },
+    "ur": {
+        "name": "UR", "domain": "www.ur.co.uk",
+        "why": "UR refurbished stock - warranty and returns terms are on the listing",
+    },
+    "stockmustgo": {
+        "name": "Stock Must Go", "domain": "www.stockmustgo.co.uk",
+        "why": "Stock Must Go refurbished stock - warranty and returns terms are on the listing",
+    },
+}
+
+# domain -> (fetched at, records)
+_CATALOGUES: dict[str, tuple[float, list[dict]]] = {}
+
+# A product's options, by name. Colour is cosmetic and a grade is a grade -
+# neither earns a row of its own; the cheapest in-stock one is what is shown.
+# Anything else (capacity, size, RAM, connectivity) is a different thing to buy.
+_COSMETIC_RE = re.compile(r"colou?r|finish|strap|band")
+_GRADE_RE = re.compile(r"condition|grade|cosmetic|quality")
+_GRADE_IN_TITLE_RE = re.compile(
+    r"(?:-\s*|grade\s+)(pristine|premium|excellent|very good|great|good|fair)\s*$", re.I)
+
+
+def _shopify_catalogue(name: str, domain: str, why: str, cfg: dict, *, fresh: bool = False) -> list[dict]:
+    """One record per product that has something in stock: its cheapest
+    in-stock variant. Cached for shop_cache_hours."""
+    ttl = float(cfg.get("shop_cache_hours", 6) or 0) * 3600
+    hit = _CATALOGUES.get(domain)
+    if hit and ttl and not fresh and time.time() - hit[0] < ttl:
+        return hit[1]
+
+    base = "https://" + domain.strip().strip("/").replace("https://", "").replace("http://", "")
+    pages = max(1, int(cfg.get("shopify_max_pages", 8) or 8))
+    slug = re.sub(r"[^a-z0-9]+", "", domain.lower().replace("www.", ""))[:24]
+    out, seen = [], set()
+    for page in range(1, pages + 1):
+        payload = _get_json(f"{base}/products.json?limit=250&page={page}", label=name,
+                            headers={"Referer": base + "/"})
+        products = payload.get("products") if isinstance(payload, dict) else None
+        if products is None:
+            raise SourceError(f"{name} did not return a Shopify catalogue - is "
+                              f"{domain} a Shopify store?", fatal=True)
+        for prod in products:
+            pid = str(prod.get("id") or "")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            # Which of the product's options are cosmetic (colour) or a grade,
+            # and which make it a different thing to buy (128GB vs 512GB)?
+            spec_pos, grade_pos = [], None
+            for opt in prod.get("options") or []:
+                oname = str(opt.get("name") or "").strip().lower()
+                pos = opt.get("position")
+                if pos not in (1, 2, 3) or oname == "title":
+                    continue
+                if _COSMETIC_RE.search(oname):
+                    continue
+                if _GRADE_RE.search(oname):
+                    grade_pos = pos
+                    continue
+                spec_pos.append(pos)
+            # One row per spec: the cheapest in-stock colour and grade of it.
+            cheapest: dict[tuple, tuple[float, dict]] = {}
+            for v in prod.get("variants") or []:
+                if not v.get("available"):
+                    continue
+                price = money(v.get("price"))
+                if price <= 0:
+                    continue
+                key = tuple(str(v.get(f"option{pos}") or "").strip() for pos in spec_pos)
+                if key not in cheapest or price < cheapest[key][0]:
+                    cheapest[key] = (price, v)
+            if not cheapest:
+                continue
+            title = (prod.get("title") or "").strip()
+            images = prod.get("images") or []
+            image = (images[0].get("src") or "") if images else ""
+            if image.startswith("//"):
+                image = "https:" + image
+            vendor = str(prod.get("vendor") or "").strip()
+            for key, (price, variant) in cheapest.items():
+                spec = " / ".join(k for k in key if k)
+                grade = str(variant.get(f"option{grade_pos}") or "").strip() if grade_pos else ""
+                if not grade:
+                    m = _GRADE_IN_TITLE_RE.search(title)
+                    grade = m.group(1) if m else ""
+                suffix = re.sub(r"[^a-z0-9]+", "", spec.lower())
+                rec = _base_record(
+                    f"shp-{slug}-{pid}" + (f"-{suffix}" if suffix else ""),
+                    f"{title} - {spec}" if spec else title, price,
+                    f"{base}/products/{prod.get('handle') or ''}?variant={variant.get('id') or ''}",
+                    condition=f"{name} - {grade or 'refurbished'}", image=image, seller=name,
+                    location=f"{name} (UK delivery)",
+                    why=(f"{grade} - " if grade else "") + why,
+                    categories=str(prod.get("product_type") or ""))
+                # a vendor that is just the shop's own name says nothing about the item
+                if vendor and vendor.lower() not in (name.lower(), domain.lower(),
+                                                     domain.lower().replace("www.", "")):
+                    rec["specs"].setdefault("brand", vendor)
+                out.append(rec)
+        if len(products) < 250:
+            break
+        time.sleep(0.4)             # be polite
+    else:
+        log(f"  [{name}] catalogue is longer than {pages} pages - read the first "
+            f"{pages * 250:,} products (raise shopify_max_pages in config.json for more)")
+    _CATALOGUES[domain] = (time.time(), out)
+    return out
+
+
+def _shopify_match(records: list[dict], watch: dict) -> list[dict]:
+    cap = watch.get("max_price")
+    floor = watch.get("min_price") or 0
+    return [dict(r, specs=dict(r.get("specs") or {})) for r in records
+            if r["total"] >= floor and (not cap or r["total"] <= cap) and is_relevant(r, watch)]
+
+
+def _shopify_source(key: str):
+    store = SHOPIFY_STORES[key]
+
+    def search(watch: dict, cfg: dict) -> list[dict]:
+        records = _shopify_catalogue(store["name"], store["domain"], store["why"], cfg,
+                                     fresh=not float(cfg.get("shop_cache_hours", 6) or 0))
+        return _shopify_match(records, watch)
+    search.__doc__ = f"{store['name']}'s Shopify catalogue, matched against the watch."
+    return search
+
+
+def search_custom_stores(watch: dict, cfg: dict) -> list[dict]:
+    """The stores listed under "shopify_stores" in config.json. One that fails
+    is logged and skipped - it does not take the others down with it."""
+    out = []
+    for store in cfg.get("shopify_stores") or []:
+        if not isinstance(store, dict) or not store.get("domain") or store.get("enabled") is False:
+            continue
+        if any(str(store["domain"]).lower().replace("www.", "") == b["domain"].replace("www.", "")
+               for b in SHOPIFY_STORES.values()):
+            continue                    # already built in - don't list everything twice
+        name = str(store.get("name") or store["domain"])
+        try:
+            records = _shopify_catalogue(
+                name, str(store["domain"]), str(store.get("why") or f"{name} shop stock"), cfg,
+                fresh=not float(cfg.get("shop_cache_hours", 6) or 0))
+        except SourceError as exc:
+            if store["domain"] not in _CUSTOM_WARNED:
+                _CUSTOM_WARNED.add(store["domain"])
+                log(f"  ! {name}: {exc}")
+            continue
+        out.extend(_shopify_match(records, watch))
+    return out
+
+
+_CUSTOM_WARNED: set[str] = set()
+
+
+# --------------------------------------------------------------------------- #
 # feeds: fetched once per scan, matched against every watch
 # --------------------------------------------------------------------------- #
 
@@ -446,6 +622,11 @@ SOURCES = {
     "backmarket":     ("Back Market",      "shop", search_backmarket),
     "musicmagpie":    ("musicMagpie",      "shop", search_musicmagpie),
     "cashconverters": ("Cash Converters",  "shop", search_cashconverters),
+    "reboxed":        ("Reboxed",          "shop", _shopify_source("reboxed")),
+    "hoxtonmacs":     ("Hoxton Macs",      "shop", _shopify_source("hoxtonmacs")),
+    "ur":             ("UR",               "shop", _shopify_source("ur")),
+    "stockmustgo":    ("Stock Must Go",    "shop", _shopify_source("stockmustgo")),
+    "custom_stores":  ("Your stores",      "shop", search_custom_stores),
     "hukd":           ("HotUKDeals",       "feed", fetch_hotukdeals),
     "reddit_hws":     ("r/hardwareswapuk", "feed", fetch_reddit_hws),
 }
@@ -456,6 +637,31 @@ FEED_SOURCE_LABELS = [label for label, kind, _ in SOURCES.values() if kind == "f
 def test_source(key: str, cfg: dict) -> tuple[bool, str]:
     """One live call, for the Settings tab's Test button. Bypasses the cache."""
     label, kind, fn = SOURCES[key]
+    if key in SHOPIFY_STORES or key == "custom_stores":
+        stores = ([SHOPIFY_STORES[key]] if key in SHOPIFY_STORES else
+                  [s for s in (cfg.get("shopify_stores") or [])
+                   if isinstance(s, dict) and s.get("domain") and s.get("enabled") is not False])
+        if not stores:
+            return False, ('No stores listed yet. Add them to config.json as "shopify_stores": '
+                           '[{"name": "Shop name", "domain": "www.example.co.uk"}].')
+        parts, ok = [], True
+        for store in stores:
+            name = str(store.get("name") or store["domain"])
+            try:
+                found = _shopify_catalogue(name, str(store["domain"]), str(store.get("why") or ""),
+                                           dict(cfg, shopify_max_pages=1), fresh=True)
+                _CATALOGUES.pop(str(store["domain"]), None)     # one page is not the catalogue
+            except SourceError as exc:
+                ok = False
+                parts.append(f"{name}: {exc}")
+                continue
+            if found:
+                parts.append(f"{name}: {len(found)} in stock on the first page, e.g. "
+                             f"{found[0]['title'][:40]} at £{found[0]['total']:.2f}")
+            else:
+                ok = False
+                parts.append(f"{name}: answered, but nothing on the first page is in stock")
+        return ok, ("Connected - " if ok else "") + " | ".join(parts)
     if kind == "shop":
         probe = {"name": "test", "query": "macbook", "max_price": 5000, "min_price": 0,
                  "result_limit": 5}

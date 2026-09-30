@@ -478,7 +478,8 @@ class Handler(BaseHTTPRequestHandler):
 CONFIG_LOCK = threading.Lock()
 
 SITE_KEYS = ("ebay", "ebay_refurbished", "ebay_auctions", "cex",
-             "backmarket", "musicmagpie", "cashconverters", "hukd", "reddit_hws")
+             "backmarket", "musicmagpie", "cashconverters", "reboxed", "hoxtonmacs", "ur",
+             "stockmustgo", "custom_stores", "hukd", "reddit_hws")
 
 NUMERIC_WATCH_FIELDS = {
     "max_price": (1, 100000),

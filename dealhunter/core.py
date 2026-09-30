@@ -155,6 +155,13 @@ DEFAULT_CONFIG = {
     "local_towns": ["Merthyr Tydfil", "Pontypridd", "Aberdare", "Cardiff"],
     "shop_cache_hours": 6,
     "cashconverters_pages": 2,
+    # Shopify stores read through their public /products.json catalogue. The
+    # built-in ones have their own switches; add any other Shopify shop here
+    # as {"name": "Shop name", "domain": "www.example.co.uk"} and it is
+    # searched under "Your stores". 250 products a page, shopify_max_pages
+    # pages per store, re-read every shop_cache_hours.
+    "shopify_stores": [],
+    "shopify_max_pages": 8,
     "hukd_tags": [],
     # Where the market price comes from. It is the average asking price of
     # comparable listings pooled from every source ticked here - independent of
@@ -167,6 +174,10 @@ DEFAULT_CONFIG = {
         "backmarket": True,
         "musicmagpie": True,
         "cashconverters": True,
+        "reboxed": True,
+        "hoxtonmacs": True,
+        "ur": True,
+        "stockmustgo": True,
     },
     # Fewest comparable listings a market price is trusted on.
     "market_min_sample": 5,
@@ -178,6 +189,11 @@ DEFAULT_CONFIG = {
         "backmarket": True,
         "musicmagpie": True,
         "cashconverters": True,
+        "reboxed": True,
+        "hoxtonmacs": True,
+        "ur": True,
+        "stockmustgo": True,
+        "custom_stores": True,
         "hukd": True,
         "reddit_hws": False,
     },
@@ -734,7 +750,8 @@ def is_relevant(rec: dict, watch: dict) -> bool:
     specs = rec.get("specs")
     brand = specs.get("brand", "") if isinstance(specs, dict) else str(specs or "")
     hay = f" {rec.get('title', '')} {brand} ".lower()
-    queries = cex_queries(watch.get("query") or "") + cex_queries(watch.get("baseline_query") or "")
+    queries = (cex_queries(watch.get("query") or "") + cex_queries(watch.get("baseline_query") or "")
+               + cex_queries(watch.get("hunt_query") or ""))
     for q in queries:
         words = q.lower().split()
         if words and all(_says(hay, w) for w in words):
@@ -1309,6 +1326,10 @@ MARKET_LABELS = {
     "backmarket": "Back Market",
     "musicmagpie": "musicMagpie",
     "cashconverters": "Cash Converters",
+    "reboxed": "Reboxed",
+    "hoxtonmacs": "Hoxton Macs",
+    "ur": "UR",
+    "stockmustgo": "Stock Must Go",
 }
 
 # A listing priced under a quarter or over four times the middle of the sample
@@ -1465,7 +1486,10 @@ def compute_market(conn, watch, cfg, excludes, *, client=None, cex=None, shops=N
 
     # The shops take a watch, so hand them one that asks the market question:
     # the typical name, the wide price window, no bargain cap.
-    market_watch = dict(watch, query=query, min_price=lo, max_price=shop_hi, result_limit=limit)
+    # hunt_query keeps the watch's own search words in play for the stores
+    # that are matched by name (see is_relevant) rather than searched.
+    market_watch = dict(watch, query=query, hunt_query=watch["query"], min_price=lo,
+                        max_price=shop_hi, result_limit=limit)
     for key, (label, fn) in (shops or {}).items():
         if key in dead:
             continue
@@ -2279,8 +2303,8 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None,
         market_client = client if market_on.get("ebay") else None
         market_cex = (cex or CexClient(cfg)) if market_on.get("cex") else None
         market_shops = {k: (extra.SOURCES[k][0], extra.SOURCES[k][2])
-                        for k in ("backmarket", "musicmagpie", "cashconverters")
-                        if market_on.get(k) and k in extra.SOURCES}
+                        for k in MARKET_LABELS
+                        if k not in ("ebay", "cex") and market_on.get(k) and k in extra.SOURCES}
         market_dead: set[str] = set()
         shops = {k: extra.SOURCES[k] for k, on in extra_on.items() if on and extra.SOURCES[k][1] == "shop"}
         feeds = {k: extra.SOURCES[k] for k, on in extra_on.items() if on and extra.SOURCES[k][1] == "feed"}
@@ -2954,6 +2978,8 @@ STARTER_CONFIG = {
     "local_towns": DEFAULT_CONFIG["local_towns"],
     "shop_cache_hours": 6,
     "cashconverters_pages": 2,
+    "shopify_stores": [],
+    "shopify_max_pages": 8,
     "hukd_tags": [],
     "market_sources": dict(DEFAULT_CONFIG["market_sources"]),
     "market_min_sample": 5,
