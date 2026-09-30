@@ -180,17 +180,29 @@ hover that range for how many listings it came from and which sources.
 1. **Sample.** The watch's *market baseline query* (the ordinary name for the thing,
    editable on the Watches tab) is searched on every source ticked under
    **Settings → Market price**: eBay Buy It Now (when API keys are saved), CeX,
-   Back Market, musicMagpie and Cash Converters. The bargain cap is ignored — the
-   window is £1 up to twenty times the cap — because the going rate sits well above
-   what is being hunted. CeX is sampled on its sell price for every matching box,
-   in stock or not.
+   Back Market, musicMagpie and Cash Converters. The bargain cap is ignored, because
+   the going rate sits well above what is being hunted: the window is £1 up to twenty
+   times the cap on eBay and four times the cap in the shops. CeX is sampled on its
+   sell price for every matching box, in stock or not.
 2. **Clean.** The same gates as the hunt: UK only, nothing broken or parts-only, none
    of the "not actually the item" words, the watch's required words and spec filters.
+   Shop results must also *name the thing*: every word of one of the watch's search
+   alternatives, or of its baseline query, has to be in the listing's name or brand.
+   The shops' own searches are loose — CeX answers "ray-ban" with "Sport Band" watch
+   straps and *Band of Brothers* — so without this their junk sets the price.
 3. **Pool and trim.** All the prices go into one list. Anything under a quarter or
    over four times the middle of it is dropped (a charger, a job lot), then the top
    and bottom tenth are trimmed off (ten or more listings only).
 4. **Average, low, high.** The average of what is left is the market price; the
    cheapest and dearest of what is left are the low and high.
+
+The hunt applies the same two rules to what the shops and feeds return. A result that
+doesn't name what the watch searches for is dropped ("not what was searched for" in
+the Activity log), and so is one priced under a quarter of the market average ("priced
+too far under market to be the item") — that is a strap, a case or a cable, not a
+bargain. eBay listings keep the **check carefully** flag instead. A listing belongs
+to the first watch that finds it; a second watch matching it no longer rewrites its
+market price.
 
 At least five clean comparables are needed (`market_min_sample`), otherwise the find
 is listed with no discount figure. The price is kept for 12 hours

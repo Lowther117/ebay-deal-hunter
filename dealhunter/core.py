@@ -715,6 +715,33 @@ def title_has_all(title: str, required: list[str]) -> bool:
     return True
 
 
+def _says(text: str, word: str) -> bool:
+    """`word` appears in `text` as a whole word, plural allowed."""
+    return bool(re.search(r"(?<![a-z0-9])" + re.escape(word) + r"(?:s|es)?(?![a-z0-9])", text))
+
+
+def is_relevant(rec: dict, watch: dict) -> bool:
+    """Does this listing actually name what the watch is looking for?
+
+    eBay's keyword search is strict, so its results are taken as read. The
+    shops' searches are not: they match loosely and on part-words, so
+    "ray-ban" brings back "Sport Band" watch straps and "Band of Brothers",
+    and a query that matches nothing still returns a page of something. A
+    shop listing is only kept if its name (plus its brand, which CeX leaves
+    out of the name) contains every word of one of the watch's search
+    alternatives, or every word of its market baseline query.
+    """
+    specs = rec.get("specs")
+    brand = specs.get("brand", "") if isinstance(specs, dict) else str(specs or "")
+    hay = f" {rec.get('title', '')} {brand} ".lower()
+    queries = cex_queries(watch.get("query") or "") + cex_queries(watch.get("baseline_query") or "")
+    for q in queries:
+        words = q.lower().split()
+        if words and all(_says(hay, w) for w in words):
+            return True
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # specs: brand, CPU, RAM, storage
 # --------------------------------------------------------------------------- #
@@ -1222,23 +1249,30 @@ def save_market(conn, watch: str, stats: dict, sources: str) -> None:
 def upsert_item(conn, rec: dict) -> bool:
     """Insert or update. Returns True if this is a brand-new hit."""
     existing = conn.execute(
-        "SELECT item_id, total FROM items WHERE item_id=?", (rec["item_id"],)
+        "SELECT item_id, total, watch, is_live FROM items WHERE item_id=?", (rec["item_id"],)
     ).fetchone()
     ts = now_utc()
+    if existing and existing["is_live"] and existing["watch"] and existing["watch"] != rec["watch"]:
+        # Another watch already holds this listing. Leave its row alone:
+        # writing this watch's market price over it is how a strap filed under
+        # one watch ended up scored against a different watch's average.
+        return False
     if existing:
         conn.execute(
             """UPDATE items SET title=?, price=?, shipping=?, total=?, condition=?,
                seller_pct=?, seller_score=?, baseline=?, discount_pct=?, last_seen=?,
                is_live=1, flags=?, quality=?, quality_why=?, url=?, image=?,
                bid_count=?, ends=?, specs=?, market_min=?, market_max=?, market_n=?,
-               market_src=? WHERE item_id=?""",
+               market_src=?, watch=?, grp=?, source=? WHERE item_id=?""",
             (rec["title"], rec["price"], rec["shipping"], rec["total"], rec["condition"],
              rec["seller_pct"], rec["seller_score"], rec["baseline"], rec["discount_pct"],
              ts, rec["flags"], rec.get("quality", ""), rec.get("quality_why", ""),
              rec["url"], rec["image"], int(rec.get("bid_count") or 0),
              rec.get("ends", ""), specs_summary(rec.get("specs") or {}),
              rec.get("market_min") or 0.0, rec.get("market_max") or 0.0,
-             int(rec.get("market_n") or 0), rec.get("market_src", ""), rec["item_id"]),
+             int(rec.get("market_n") or 0), rec.get("market_src", ""),
+             rec["watch"], rec.get("group", "Other"), rec.get("source", "eBay"),
+             rec["item_id"]),
         )
         return False
 
@@ -1379,6 +1413,12 @@ def compute_market(conn, watch, cfg, excludes, *, client=None, cex=None, shops=N
     dead = dead if dead is not None else set()
     query = watch.get("baseline_query") or watch["query"]
     lo, hi = market_range(watch)
+    # The shops get a narrower window than eBay. Their searches return whole
+    # product families (CeX answers "ray-ban wayfarer" with 187 pairs of
+    # Ray-Ban Meta smart glasses at 95-400), and a find at the bargain cap can
+    # only ever count as the same item if the average is within four times it
+    # - so anything dearer than that has no business in the sample.
+    shop_hi = int(watch.get("baseline_max_price") or int(watch.get("max_price", 100) or 100) * 4)
     limit = int(cfg.get("baseline_sample_size", 100) or 100)
     required = watch.get("require_terms") or []
     pairs: list[tuple[float, str]] = []
@@ -1386,6 +1426,9 @@ def compute_market(conn, watch, cfg, excludes, *, client=None, cex=None, shops=N
     def take(key, records):
         n = 0
         for rec in records:
+            # the shops' searches are loose - see is_relevant()
+            if key != "ebay" and not is_relevant(rec, watch):
+                continue
             if _comparable(rec, watch, cfg, excludes, required):
                 pairs.append((rec["total"], key))
                 n += 1
@@ -1407,7 +1450,7 @@ def compute_market(conn, watch, cfg, excludes, *, client=None, cex=None, shops=N
             for q in cex_queries(query):
                 # online_only off: a box CeX has priced is a price whether or
                 # not one happens to be in the warehouse today.
-                for hit in cex.search(q, min_price=lo, max_price=hi, limit=limit,
+                for hit in cex.search(q, min_price=lo, max_price=shop_hi, limit=limit,
                                       online_only=False):
                     rec = normalise_cex(hit, cfg)
                     if rec["item_id"] and rec["item_id"] not in seen:
@@ -1422,7 +1465,7 @@ def compute_market(conn, watch, cfg, excludes, *, client=None, cex=None, shops=N
 
     # The shops take a watch, so hand them one that asks the market question:
     # the typical name, the wide price window, no bargain cap.
-    market_watch = dict(watch, query=query, min_price=lo, max_price=hi, result_limit=limit)
+    market_watch = dict(watch, query=query, min_price=lo, max_price=shop_hi, result_limit=limit)
     for key, (label, fn) in (shops or {}).items():
         if key in dead:
             continue
@@ -1804,13 +1847,19 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
     market = baseline if isinstance(baseline, dict) else ({"avg": baseline} if baseline else {})
     baseline = market.get("avg") or 0.0
 
+    from_ebay = source.startswith("eBay")
     new_hits = 0
     kept = 0
     rejected = 0
     non_uk = 0
     off_spec = 0
+    off_query = 0
+    not_same = 0
     for rec in records:
         if not rec.get("item_id"):
+            continue
+        if not from_ebay and not is_relevant(rec, watch):
+            off_query += 1
             continue
 
         ok_uk, uk_why = uk_ok(rec, cfg)
@@ -1852,6 +1901,14 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
 
         discount = None
         if baseline:
+            # The same rule the market sample uses: under a quarter of the
+            # going rate is a different thing (a strap, a case, a cable), not
+            # a 90%-off bargain. A shop with fixed, tested stock never prices
+            # the real item there. eBay keeps its "check carefully" flag
+            # instead, because a private seller occasionally does.
+            if not from_ebay and rec["total"] < baseline * MARKET_FAR_LOW:
+                not_same += 1
+                continue
             discount = round((1 - rec["total"] / baseline) * 100, 1)
             if min_disc and discount < min_disc:
                 continue
@@ -1889,8 +1946,13 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
             log(f"  NEW  {cfg['currency']} {rec['total']:>8.2f}  ({disc_txt}, {verdict}, {source})  {rec['title'][:58]}")
 
     conn.commit()
+    extra = ""
+    if off_query:
+        extra += f" | {off_query} not what was searched for"
+    if not_same:
+        extra += f" | {not_same} priced too far under market to be the item"
     log(f"  [{source}] {kept} kept | {rejected} rejected on condition | "
-        f"{off_spec} off-spec | {non_uk} non-UK | {new_hits} new")
+        f"{off_spec} off-spec | {non_uk} non-UK{extra} | {new_hits} new")
     return kept, new_hits
 
 
@@ -2002,6 +2064,34 @@ def run_demo(conn, cfg) -> tuple[int, int]:
 # --------------------------------------------------------------------------- #
 # dashboard
 # --------------------------------------------------------------------------- #
+
+def drop_mismatched(conn, cfg) -> int:
+    """
+    Retire saved shop and feed listings that the current rules would not keep:
+    ones that don't name what their watch searches for, and ones priced under
+    a quarter of their market average. Clears out what earlier versions let
+    through without waiting a week for it to expire.
+    """
+    watches = {w.get("name"): w for w in cfg.get("watches", []) if isinstance(w, dict)}
+    gone = []
+    for row in conn.execute(
+        "SELECT item_id, watch, source, title, specs, total, baseline FROM items WHERE is_live=1"
+    ).fetchall():
+        if (row["source"] or "eBay").startswith("eBay") or str(row["item_id"]).startswith("demo-"):
+            continue
+        watch = watches.get(row["watch"])
+        if watch is None:
+            continue
+        rec = {"title": row["title"] or "", "specs": row["specs"] or ""}
+        if not is_relevant(rec, watch) or (
+                row["baseline"] and row["total"] < row["baseline"] * MARKET_FAR_LOW):
+            gone.append((row["item_id"],))
+    if gone:
+        conn.executemany("UPDATE items SET is_live=0 WHERE item_id=?", gone)
+        conn.commit()
+        log(f"Retired {len(gone)} saved listing(s) that were not what their watch searches for.")
+    return len(gone)
+
 
 def expire_stale(conn, cfg) -> int:
     """
@@ -2212,6 +2302,7 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None,
             except extra.SourceError as exc:
                 log(f"  ! {label}: {exc}")
         total = len(watches)
+        drop_mismatched(conn, cfg)
         log(f"Scanning {total} watch(es), UK only, via {' + '.join(active)}.")
 
         for i, watch in enumerate(watches, 1):
