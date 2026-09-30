@@ -156,6 +156,20 @@ DEFAULT_CONFIG = {
     "shop_cache_hours": 6,
     "cashconverters_pages": 2,
     "hukd_tags": [],
+    # Where the market price comes from. It is the average asking price of
+    # comparable listings pooled from every source ticked here - independent of
+    # which sources are switched on for hunting, so CeX can be a price
+    # reference without its stock filling the table. eBay only counts when
+    # API keys are saved; the rest need no keys.
+    "market_sources": {
+        "ebay": True,
+        "cex": True,
+        "backmarket": True,
+        "musicmagpie": True,
+        "cashconverters": True,
+    },
+    # Fewest comparable listings a market price is trusted on.
+    "market_min_sample": 5,
     "sites": {
         "ebay": True,
         "ebay_refurbished": True,
@@ -369,7 +383,7 @@ CALLS = CallBudget(CALL_LOG)
 
 def estimated_scan_cost(cfg: dict) -> int:
     """eBay calls one full scan is likely to make: what the last one really
-    made, or - before there has been one - three searches and a market median
+    made, or - before there has been one - three searches and a market sample
     for every watch that is switched on."""
     sites = cfg.get("sites") or {"ebay": True}
     on = sum(1 for k, d in (("ebay", True), ("ebay_refurbished", True),
@@ -1070,6 +1084,10 @@ CREATE TABLE IF NOT EXISTS items (
     seller_score  INTEGER,
     location      TEXT,
     baseline      REAL,
+    market_min    REAL,
+    market_max    REAL,
+    market_n      INTEGER,
+    market_src    TEXT,
     discount_pct  REAL,
     first_seen    TEXT,
     last_seen     TEXT,
@@ -1088,7 +1106,11 @@ CREATE TABLE IF NOT EXISTS baselines (
     median    REAL,
     sample_n  INTEGER,
     p10       REAL,
-    p90       REAL
+    p90       REAL,
+    mean      REAL,
+    lo        REAL,
+    hi        REAL,
+    sources   TEXT
 );
 CREATE TABLE IF NOT EXISTS runs (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1118,6 +1140,19 @@ MIGRATIONS = {
         ("bid_count", "INTEGER DEFAULT 0"),
         ("ends", "TEXT"),
         ("specs", "TEXT"),
+        ("market_min", "REAL"),
+        ("market_max", "REAL"),
+        ("market_n", "INTEGER"),
+        ("market_src", "TEXT"),
+    ],
+    # 2.6: the market price became an average with its low and high, pooled
+    # from several sources. Rows written before that have no `mean` and are
+    # treated as expired, so the first scan after upgrading refreshes them.
+    "baselines": [
+        ("mean", "REAL"),
+        ("lo", "REAL"),
+        ("hi", "REAL"),
+        ("sources", "TEXT"),
     ],
 }
 
@@ -1142,23 +1177,44 @@ def open_db() -> sqlite3.Connection:
     return conn
 
 
-def latest_baseline(conn: sqlite3.Connection, watch: str, max_age_hours: float):
+def latest_market(conn: sqlite3.Connection, watch: str, max_age_hours: float,
+                  not_before: str = "") -> dict | None:
+    """The saved market price for a watch, if it is fresh enough:
+    {"avg", "lo", "hi", "n", "sources"}. `not_before` is the moment the
+    market sources were last changed - anything sampled before it is stale."""
     row = conn.execute(
-        "SELECT median, sample_n, ts FROM baselines WHERE watch=? ORDER BY id DESC LIMIT 1",
+        "SELECT mean, lo, hi, sample_n, sources, ts FROM baselines "
+        "WHERE watch=? ORDER BY id DESC LIMIT 1",
         (watch,),
     ).fetchone()
-    if not row or not row["median"]:
-        return None
-    age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["ts"])).total_seconds() / 3600
+    if not row or not row["mean"]:
+        return None                     # nothing yet, or a pre-2.6 median-only row
+    taken = datetime.fromisoformat(row["ts"])
+    age = (datetime.now(timezone.utc) - taken).total_seconds() / 3600
     if age > max_age_hours:
         return None
-    return row["median"]
+    if not_before:
+        try:
+            if taken < datetime.fromisoformat(not_before):
+                return None
+        except (TypeError, ValueError):
+            pass
+    return {"avg": row["mean"], "lo": row["lo"] or 0.0, "hi": row["hi"] or 0.0,
+            "n": row["sample_n"] or 0, "sources": row["sources"] or ""}
 
 
-def save_baseline(conn, watch, median, n, p10, p90) -> None:
+def latest_baseline(conn: sqlite3.Connection, watch: str, max_age_hours: float):
+    """Just the average, for callers that only want the one number."""
+    market = latest_market(conn, watch, max_age_hours)
+    return market["avg"] if market else None
+
+
+def save_market(conn, watch: str, stats: dict, sources: str) -> None:
     conn.execute(
-        "INSERT INTO baselines (watch, ts, median, sample_n, p10, p90) VALUES (?,?,?,?,?,?)",
-        (watch, now_utc(), median, n, p10, p90),
+        "INSERT INTO baselines (watch, ts, median, sample_n, p10, p90, mean, lo, hi, sources) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (watch, now_utc(), stats["median"], stats["n"], stats["p10"], stats["p90"],
+         stats["avg"], stats["lo"], stats["hi"], sources),
     )
     conn.commit()
 
@@ -1174,12 +1230,15 @@ def upsert_item(conn, rec: dict) -> bool:
             """UPDATE items SET title=?, price=?, shipping=?, total=?, condition=?,
                seller_pct=?, seller_score=?, baseline=?, discount_pct=?, last_seen=?,
                is_live=1, flags=?, quality=?, quality_why=?, url=?, image=?,
-               bid_count=?, ends=?, specs=? WHERE item_id=?""",
+               bid_count=?, ends=?, specs=?, market_min=?, market_max=?, market_n=?,
+               market_src=? WHERE item_id=?""",
             (rec["title"], rec["price"], rec["shipping"], rec["total"], rec["condition"],
              rec["seller_pct"], rec["seller_score"], rec["baseline"], rec["discount_pct"],
              ts, rec["flags"], rec.get("quality", ""), rec.get("quality_why", ""),
              rec["url"], rec["image"], int(rec.get("bid_count") or 0),
-             rec.get("ends", ""), specs_summary(rec.get("specs") or {}), rec["item_id"]),
+             rec.get("ends", ""), specs_summary(rec.get("specs") or {}),
+             rec.get("market_min") or 0.0, rec.get("market_max") or 0.0,
+             int(rec.get("market_n") or 0), rec.get("market_src", ""), rec["item_id"]),
         )
         return False
 
@@ -1188,8 +1247,8 @@ def upsert_item(conn, rec: dict) -> bool:
            shipping, total, currency, free_shipping, condition, url, image,
            seller_name, seller_pct, seller_score, location, baseline, discount_pct,
            first_seen, last_seen, is_live, flags, quality, quality_why,
-           bid_count, ends, specs)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)""",
+           bid_count, ends, specs, market_min, market_max, market_n, market_src)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)""",
         (rec["item_id"], rec["watch"], rec.get("group", "Other"),
          rec.get("source", "eBay"), rec.get("country", "GB"), rec["title"], rec["price"], rec["shipping"],
          rec["total"], rec["currency"], int(rec["free_shipping"]), rec["condition"],
@@ -1197,7 +1256,9 @@ def upsert_item(conn, rec: dict) -> bool:
          rec["seller_score"], rec["location"], rec["baseline"], rec["discount_pct"],
          ts, ts, rec["flags"], rec.get("quality", ""), rec.get("quality_why", ""),
          int(rec.get("bid_count") or 0), rec.get("ends", ""),
-         specs_summary(rec.get("specs") or {})),
+         specs_summary(rec.get("specs") or {}),
+         rec.get("market_min") or 0.0, rec.get("market_max") or 0.0,
+         int(rec.get("market_n") or 0), rec.get("market_src", "")),
     )
     return True
 
@@ -1206,73 +1267,198 @@ def upsert_item(conn, rec: dict) -> bool:
 # scanning
 # --------------------------------------------------------------------------- #
 
+# Where a market price can be sampled from: config key -> label. eBay needs API
+# keys; the others answer a plain request.
+MARKET_LABELS = {
+    "ebay": "eBay",
+    "cex": "CeX",
+    "backmarket": "Back Market",
+    "musicmagpie": "musicMagpie",
+    "cashconverters": "Cash Converters",
+}
+
+# A listing priced under a quarter or over four times the middle of the sample
+# is not the same thing (a charger, a case, a job lot, a maxed-out workstation)
+# and is left out before anything is averaged.
+MARKET_FAR_LOW = 0.25
+MARKET_FAR_HIGH = 4.0
+
+
+def _market_core(pairs: list[tuple[float, str]]) -> tuple[list, list]:
+    """(everything plausible, the part that gets averaged) from (price, source)
+    pairs: far-off prices dropped, then the top and bottom tenth trimmed."""
+    pairs = sorted((p for p in pairs if p[0] > 0), key=lambda p: p[0])
+    if not pairs:
+        return [], []
+    mid = statistics.median(p[0] for p in pairs)
+    pairs = [p for p in pairs if mid * MARKET_FAR_LOW <= p[0] <= mid * MARKET_FAR_HIGH]
+    # Trim the same number off each end - trimming one end only would drag the
+    # average towards the other. Under ten listings nothing is trimmed.
+    k = int(len(pairs) * 0.10)
+    return pairs, (pairs[k:len(pairs) - k] if k else pairs)
+
+
+def market_stats(values) -> dict | None:
+    """The market price from a list of comparable asking prices.
+
+    avg  - the mean of the sample once far-off prices and the top and bottom
+           tenth are gone. This is what "under market" is measured against.
+    lo   - the cheapest listing left in that sample.
+    hi   - the dearest listing left in that sample.
+    """
+    pairs, core = _market_core([(float(v), "") for v in values])
+    if not core:
+        return None
+    vals = [p[0] for p in pairs]
+    prices = [p[0] for p in core]
+    return {
+        "avg": round(statistics.fmean(prices), 2),
+        "lo": round(prices[0], 2),
+        "hi": round(prices[-1], 2),
+        "median": round(statistics.median(prices), 2),
+        "p10": round(vals[int((len(vals) - 1) * 0.10)], 2),
+        "p90": round(vals[int((len(vals) - 1) * 0.90)], 2),
+        "n": len(prices),
+    }
+
+
 def trimmed_stats(values: list[float]):
-    """Return (median, p10, p90, n) with the extremes trimmed off."""
-    vals = sorted(v for v in values if v > 0)
-    if len(vals) < 4:
-        return (statistics.median(vals) if vals else 0.0, 0.0, 0.0, len(vals))
-    # Trim the same number off each end. Trimming only the top (which is what
-    # int(n*0.9) does on its own for n < 10) drags the median down and makes a
-    # thin market look cheaper than it is.
-    k = int(len(vals) * 0.10)
-    core = vals[k:len(vals) - k] if k else vals
-    p10 = vals[int((len(vals) - 1) * 0.10)]
-    p90 = vals[int((len(vals) - 1) * 0.90)]
-    return round(statistics.median(core), 2), round(p10, 2), round(p90, 2), len(core)
+    """Kept for anything still calling it: (median, p10, p90, n)."""
+    st = market_stats(values)
+    return (st["median"], st["p10"], st["p90"], st["n"]) if st else (0.0, 0.0, 0.0, 0)
 
 
-def compute_baseline(client, conn, watch, cfg, excludes) -> float | None:
-    """Median total price of comparable *live* Buy It Now listings."""
+def market_range(watch: dict) -> tuple[int, int]:
+    """The price window a market sample is taken from. It deliberately ignores
+    the bargain cap - the going rate sits well above what is being hunted."""
+    lo = int(watch.get("baseline_min_price", 1) or 1)
+    hi = int(watch.get("baseline_max_price") or int(watch.get("max_price", 100) or 100) * 20)
+    return lo, hi
+
+
+def _comparable(rec: dict, watch: dict, cfg: dict, excludes: list[str], required: list[str]) -> bool:
+    """Is this listing a fair comparison for the watch? The market price must
+    reflect working, UK-based examples of the right thing only - broken units,
+    imports, accessories and the wrong spec would all drag it somewhere false."""
+    if not uk_ok(rec, cfg)[0]:
+        return False
+    if rec.get("trusted_source"):
+        # a shop's tested stock: only the "not actually the item" words apply
+        if title_blocked(rec["title"], excludes):
+            return False
+    elif assess_quality(rec, watch, cfg, excludes)[0] == "reject":
+        return False
+    if required and not title_has_all(rec["title"], required):
+        return False
+    # A 16GB watch compared against every laptop is meaningless, so the sample
+    # is narrowed the same way the hunt is. Unknowns stay in - dropping them
+    # thins the sample too far.
+    if not spec_check(rec, watch)[0]:
+        return False
+    return rec["total"] > 0
+
+
+def compute_market(conn, watch, cfg, excludes, *, client=None, cex=None, shops=None,
+                   dead: set | None = None) -> dict | None:
+    """
+    The market price for a watch: the average asking price of comparable live
+    listings, pooled from every source given, with the low and high of that
+    sample. Returns {"avg", "lo", "hi", "n", "sources"} or None.
+
+    client - an EbayClient, or None (no keys, or eBay not a market source)
+    cex    - a CexClient, or None
+    shops  - {key: (label, search_function)} from sources.py
+    dead   - keys that failed for good earlier in this scan; added to here
+    """
     name = watch["name"]
-    cached = latest_baseline(conn, name, cfg["baseline_max_age_hours"])
+    cached = latest_market(conn, name, cfg["baseline_max_age_hours"],
+                           cfg.get("market_sources_changed", ""))
     if cached:
         return cached
 
+    dead = dead if dead is not None else set()
     query = watch.get("baseline_query") or watch["query"]
-    filters = build_filters(watch, cfg, for_baseline=True)
-    try:
-        raw = client.search(
-            query,
-            filters,
-            limit=cfg["baseline_sample_size"],
-            category_ids=watch.get("category_ids"),
-        )
-    except EbayError as exc:
-        if is_auth_error(exc):
-            raise                       # keys are wrong: stop, don't limp on
-        log(f"  ! baseline for '{name}' failed: {exc}")
-        return None
-
+    lo, hi = market_range(watch)
+    limit = int(cfg.get("baseline_sample_size", 100) or 100)
     required = watch.get("require_terms") or []
-    totals = []
-    for item in raw:
-        rec = normalise(item)
-        # The baseline must reflect *working, UK-based* items only, or a market
-        # full of broken units and overseas imports drags the median down and
-        # nothing ever looks like a deal.
-        if not uk_ok(rec, cfg)[0]:
-            continue
-        verdict, _ = assess_quality(rec, watch, cfg, excludes)
-        if verdict == "reject":
-            continue
-        if required and not title_has_all(rec["title"], required):
-            continue
-        # A 16GB watch compared against every laptop's median is meaningless,
-        # so the sample is narrowed the same way the hunt is. Unknowns stay in
-        # - dropping them thins the sample too far.
-        if not spec_check(rec, watch)[0]:
-            continue
-        if rec["total"] > 0:
-            totals.append(rec["total"])
+    pairs: list[tuple[float, str]] = []
 
-    if len(totals) < 5:
-        log(f"  ! baseline for '{name}': only {len(totals)} clean comparables - skipping score")
+    def take(key, records):
+        n = 0
+        for rec in records:
+            if _comparable(rec, watch, cfg, excludes, required):
+                pairs.append((rec["total"], key))
+                n += 1
+        return n
+
+    if client is not None and "ebay" not in dead:
+        try:
+            raw = client.search(query, build_filters(watch, cfg, for_baseline=True),
+                                limit=limit, category_ids=watch.get("category_ids"))
+            take("ebay", (normalise(item) for item in raw))
+        except EbayError as exc:
+            if is_auth_error(exc):
+                raise                       # keys are wrong: stop, don't limp on
+            log(f"  ! market price for '{name}': eBay sample failed: {exc}")
+
+    if cex is not None and "cex" not in dead:
+        try:
+            seen, records = set(), []
+            for q in cex_queries(query):
+                # online_only off: a box CeX has priced is a price whether or
+                # not one happens to be in the warehouse today.
+                for hit in cex.search(q, min_price=lo, max_price=hi, limit=limit,
+                                      online_only=False):
+                    rec = normalise_cex(hit, cfg)
+                    if rec["item_id"] and rec["item_id"] not in seen:
+                        seen.add(rec["item_id"])
+                        records.append(rec)
+                time.sleep(0.2)             # be polite
+            take("cex", records)
+        except CexError as exc:
+            log(f"  ! market price for '{name}': CeX sample failed: {exc}")
+            if exc.fatal:
+                dead.add("cex")
+
+    # The shops take a watch, so hand them one that asks the market question:
+    # the typical name, the wide price window, no bargain cap.
+    market_watch = dict(watch, query=query, min_price=lo, max_price=hi, result_limit=limit)
+    for key, (label, fn) in (shops or {}).items():
+        if key in dead:
+            continue
+        try:
+            take(key, fn(market_watch, cfg))
+        except CexError as exc:             # sources.SourceError is a CexError
+            log(f"  ! market price for '{name}': {label} sample failed: {exc}")
+            if exc.fatal:
+                dead.add(key)
+
+    _, core = _market_core(pairs)
+    need = int(cfg.get("market_min_sample", 5) or 5)
+    if len(core) < need:
+        log(f"  ! market price for '{name}': only {len(core)} clean comparables "
+            f"(need {need}) - not scoring against the market this time")
         return None
 
-    median, p10, p90, n = trimmed_stats(totals)
-    save_baseline(conn, name, median, n, p10, p90)
-    log(f"  baseline for '{name}': median {cfg['currency']} {median:.2f} from {n} listings")
-    return median
+    stats = market_stats([p[0] for p in pairs])
+    counts: dict[str, int] = {}
+    for _, key in core:
+        counts[key] = counts.get(key, 0) + 1
+    sources = ", ".join(f"{MARKET_LABELS.get(k, k)} {counts[k]}"
+                        for k in MARKET_LABELS if counts.get(k))
+    save_market(conn, name, stats, sources)
+    cur = cfg["currency"]
+    log(f"  market price for '{name}': average {cur} {stats['avg']:.2f} "
+        f"(low {cur} {stats['lo']:.2f} - high {cur} {stats['hi']:.2f}) "
+        f"from {stats['n']} listings: {sources}")
+    return {"avg": stats["avg"], "lo": stats["lo"], "hi": stats["hi"],
+            "n": stats["n"], "sources": sources}
+
+
+def compute_baseline(client, conn, watch, cfg, excludes) -> float | None:
+    """The eBay-only average, for callers that only want the one number."""
+    market = compute_market(conn, watch, cfg, excludes, client=client)
+    return market["avg"] if market else None
 
 
 def scan_watch(client, conn, watch, cfg, baseline) -> tuple[int, int]:
@@ -1565,8 +1751,8 @@ def scan_watch_cex(client: CexClient, conn, watch, cfg, baseline) -> tuple[int, 
     Every box is tested and warrantied, so the condition guesswork is skipped
     like it is for eBay Refurbished, and the discount bar drops by the same
     allowance - shop prices sit above private sales, and the warranty is what
-    you pay for. Prices are scored against the eBay market median when there
-    is one, so "under market" means under what the same thing fetches used.
+    you pay for. Prices are scored against the pooled market average (see
+    compute_market), so "under market" means under the going asking price.
     """
     allowance = int(cfg.get("refurbished_discount_allowance", 15) or 0)
     relaxed = dict(watch)
@@ -1613,6 +1799,10 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
     min_score = watch.get("min_seller_feedback_score", cfg["min_seller_feedback_score"])
     mode = watch.get("quality_mode", cfg.get("quality_mode", "balanced"))
     cap = watch.get("max_price")
+    # `baseline` is the market price: the dict compute_market() returns, a bare
+    # average (older callers), or nothing when there were too few comparables.
+    market = baseline if isinstance(baseline, dict) else ({"avg": baseline} if baseline else {})
+    baseline = market.get("avg") or 0.0
 
     new_hits = 0
     kept = 0
@@ -1683,6 +1873,10 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
             group=watch.get("group", "Other"),
             source=source,
             baseline=baseline or 0.0,
+            market_min=market.get("lo") or 0.0,
+            market_max=market.get("hi") or 0.0,
+            market_n=market.get("n") or 0,
+            market_src=market.get("sources") or "",
             discount_pct=discount if discount is not None else 0.0,
             flags="|".join(flags),
             quality=verdict,
@@ -1691,7 +1885,7 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
         kept += 1
         if upsert_item(conn, rec):
             new_hits += 1
-            disc_txt = f"{discount:.0f}% under market" if discount is not None else "no baseline"
+            disc_txt = f"{discount:.0f}% under market" if discount is not None else "no market price"
             log(f"  NEW  {cfg['currency']} {rec['total']:>8.2f}  ({disc_txt}, {verdict}, {source})  {rec['title'][:58]}")
 
     conn.commit()
@@ -1781,6 +1975,10 @@ def run_demo(conn, cfg) -> tuple[int, int]:
             "seller_score": rng.choice([12, 148, 1902, 44]),
             "location": rng.choice(["Cardiff, GB", "Bristol, GB", "Leeds, GB", "London, GB"]),
             "baseline": market,
+            "market_min": round(market * 0.72, 2),
+            "market_max": round(market * 1.31, 2),
+            "market_n": 40 + (i % 5) * 7,
+            "market_src": "eBay %d, CeX %d, Back Market %d" % (28 + (i % 5) * 5, 8 + (i % 5), 4 + (i % 5)),
             "discount_pct": discount,
             "flags": "low-feedback-seller" if i == 0 else ("condition-unclear" if i in (1, 10) else ""),
             "quality": "unsure" if i in (1, 10) else "working",
@@ -1792,7 +1990,11 @@ def run_demo(conn, cfg) -> tuple[int, int]:
     for watch in watches:
         base = rng.uniform(120, 320)
         for day in range(8):
-            save_baseline(conn, watch, round(base * (1 + rng.uniform(-0.06, 0.06)), 2), 40, 0, 0)
+            avg = round(base * (1 + rng.uniform(-0.06, 0.06)), 2)
+            save_market(conn, watch, {"avg": avg, "median": round(avg * 0.97, 2),
+                                      "lo": round(avg * 0.72, 2), "hi": round(avg * 1.31, 2),
+                                      "p10": round(avg * 0.78, 2), "p90": round(avg * 1.24, 2),
+                                      "n": 40}, "eBay 28, CeX 8, Back Market 4")
     conn.commit()
     return len(DEMO_TITLES), len(DEMO_TITLES)
 
@@ -1827,10 +2029,12 @@ def collect_dashboard_data(conn, cfg) -> dict:
 
     history: dict[str, list] = {}
     for row in conn.execute(
-        "SELECT watch, ts, median FROM baselines ORDER BY id ASC"
+        "SELECT watch, ts, median, mean, lo, hi, sample_n, sources FROM baselines ORDER BY id ASC"
     ).fetchall():
+        avg = row["mean"] or row["median"]      # rows from before 2.6 only have a median
         history.setdefault(row["watch"], []).append(
-            {"ts": row["ts"], "median": row["median"]}
+            {"ts": row["ts"], "avg": avg, "median": avg, "lo": row["lo"] or 0,
+             "hi": row["hi"] or 0, "n": row["sample_n"] or 0, "sources": row["sources"] or ""}
         )
 
     runs = [dict(r) for r in conn.execute(
@@ -1972,12 +2176,22 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None,
                     client.call_cap = call_budget(cfg)
             elif use_cex or any(extra_on.values()):
                 log("No eBay API keys saved - searching the shops and feeds only this time. "
-                    "Add the keys in Settings for eBay and for market prices.")
+                    "The market price comes from the shops alone until the keys are added.")
                 use_ebay = use_refurb = use_auctions = False
             else:
                 return {"ok": False, "scanned": 0, "new_hits": 0,
                         "error": "No eBay API keys saved yet - add them in Settings."}
         cex = CexClient(cfg) if use_cex else None
+
+        # The market price is pooled from its own list of sources, whether or
+        # not each one is also switched on for hunting.
+        market_on = {**DEFAULT_CONFIG["market_sources"], **(cfg.get("market_sources") or {})}
+        market_client = client if market_on.get("ebay") else None
+        market_cex = (cex or CexClient(cfg)) if market_on.get("cex") else None
+        market_shops = {k: (extra.SOURCES[k][0], extra.SOURCES[k][2])
+                        for k in ("backmarket", "musicmagpie", "cashconverters")
+                        if market_on.get(k) and k in extra.SOURCES}
+        market_dead: set[str] = set()
         shops = {k: extra.SOURCES[k] for k, on in extra_on.items() if on and extra.SOURCES[k][1] == "shop"}
         feeds = {k: extra.SOURCES[k] for k, on in extra_on.items() if on and extra.SOURCES[k][1] == "feed"}
 
@@ -2006,15 +2220,32 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None,
             log(f"- {watch['name']}: '{watch['query']}' up to "
                 f"{cfg['currency']} {watch.get('max_price', '-')}")
 
+            baseline = None
             try:
-                # One market median per watch, worked out once and shared by
-                # every source - so it costs one API call, not one per source.
-                baseline = latest_baseline(conn, watch["name"],
-                                           cfg["baseline_max_age_hours"])
-                if baseline is None and client is not None:
+                # One market price per watch, worked out once and shared by
+                # every source: the average of comparable listings across
+                # eBay (when there are keys) and the shops, kept for
+                # baseline_max_age_hours. So a CeX or Back Market find is
+                # scored against the market whether or not eBay is in play.
+                baseline = latest_market(conn, watch["name"],
+                                         cfg["baseline_max_age_hours"],
+                                         cfg.get("market_sources_changed", ""))
+                if baseline is None:
                     excludes = (list(cfg["global_exclude_terms"])
                                 + list(watch.get("exclude_terms") or []))
-                    baseline = compute_baseline(client, conn, watch, cfg, excludes)
+                    baseline = compute_market(conn, watch, cfg, excludes,
+                                              client=market_client, cex=market_cex,
+                                              shops=market_shops, dead=market_dead)
+                    # A source that refused the price sample outright will
+                    # refuse the hunt too - drop it now rather than erroring
+                    # once more per watch.
+                    for key in market_dead:
+                        if key in shops:
+                            log(f"  {shops[key][0]} switched off for the rest of this scan.")
+                            del shops[key]
+                    if "cex" in market_dead and cex is not None:
+                        log("  CeX switched off for the rest of this scan.")
+                        cex = None
 
                 if use_ebay:
                     kept, new = scan_watch(client, conn, watch, cfg, baseline)
@@ -2084,7 +2315,7 @@ def scan_all(cfg, conn, *, names=None, group=None, demo=False, progress=None,
 
     if not demo and client is not None and names is None and group is None:
         # What a full scan really costs, for pacing the automatic ones. Eased
-        # down slowly: a scan that found its market medians cached is cheaper
+        # down slowly: a scan that found its market prices cached is cheaper
         # than the next one that has to fetch them again.
         CALLS.set_scan_cost(max(client.calls_made, int(CALLS.scan_cost * 0.9)))
         log(f"eBay calls: {client.calls_made:,} this scan, {CALLS.used():,} of "
@@ -2633,6 +2864,8 @@ STARTER_CONFIG = {
     "shop_cache_hours": 6,
     "cashconverters_pages": 2,
     "hukd_tags": [],
+    "market_sources": dict(DEFAULT_CONFIG["market_sources"]),
+    "market_min_sample": 5,
     "sites": dict(DEFAULT_CONFIG["sites"]),
     "watches": WATCH_CATALOGUE,
 }

@@ -219,7 +219,7 @@ _PAGE = r"""<!DOCTYPE html>
       <div class="cap">HotUKDeals posts and r/hardwareswapuk sales that match a watch. These are not
         the used market: a HotUKDeals price is a new item from a shop, and a Reddit post is a private
         person with no buyer protection. Everything matching is shown — the discount figure, where
-        there is one, is against the used-market median. Which feeds run is set under Settings.</div>
+        there is one, is against the market average. Which feeds run is set under Settings.</div>
     </div>
     <div class="tiles" id="tiles"></div>
     <div class="controls">
@@ -253,8 +253,8 @@ _PAGE = r"""<!DOCTYPE html>
     <div class="card">
       <h3>eBay API keys</h3>
       <div class="cap">Free from developer.ebay.com — you want the <strong>Production</strong>
-        keyset, not Sandbox. Stored only on this machine. CeX needs no keys; without these,
-        eBay is skipped and CeX finds are shown without a market comparison.</div>
+        keyset, not Sandbox. Stored only on this machine. The shops need no keys; without these,
+        eBay is skipped and the market price is worked out from the shops alone.</div>
       <div class="field">
         <label for="cid">App ID (Client ID)</label>
         <input type="text" id="cid" placeholder="Yourname-appname-PRD-xxxxxxxxx-xxxxxxxx" autocomplete="off" spellcheck="false">
@@ -278,6 +278,16 @@ _PAGE = r"""<!DOCTYPE html>
         one-click search buttons on each watch instead. Scraping them would break within
         weeks and breaches their terms; a link that opens the right search does not.
       </div>
+    </div>
+
+    <div class="card">
+      <h3>Market price</h3>
+      <div class="cap">What every find is scored against: the <strong>average</strong> asking price of
+        comparable listings, pooled from the sources ticked here, shown with the <strong>low</strong>
+        and <strong>high</strong> of that sample. These are separate from the switches above — a
+        source can set the market price without its stock appearing in the table. eBay only counts
+        once API keys are saved. Changing this re-samples every price on the next scan.</div>
+      <div id="marketToggles"></div>
     </div>
 
     <div class="card">
@@ -333,8 +343,10 @@ _PAGE = r"""<!DOCTYPE html>
   <footer>
     <strong>UK only.</strong> Every listing is located in Great Britain and ships within it,
     so no import duty, VAT handling or customs fees apply. Prices are item + postage.
-    "Under market" compares against the trimmed median of comparable live listings, not
-    sold prices. Sanity-check anything before buying.
+    "Under market" compares against the average asking price of comparable live listings
+    across eBay and the shops (far-off prices and the top and bottom tenth left out), with the
+    low and high of that sample under it. Asking prices, not sold prices. Sanity-check anything
+    before buying.
   </footer>
 </div>
 
@@ -350,6 +362,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = v => (DATA.currency === "GBP" ? "£" : DATA.currency + " ") + Number(v || 0).toFixed(2);
+const fmt0 = v => (DATA.currency === "GBP" ? "£" : DATA.currency + " ") + Math.round(Number(v || 0));
 
 async function api(path, body) {
   // A saved-out copy of this page has its data baked in and no server behind it.
@@ -408,7 +421,7 @@ function tiles() {
     { l: "Confirmed working", v: working.length, n: (items.length - working.length) + " with unclear condition" },
     { l: "Found last 24h", v: fresh.length, n: fresh.length ? "newest " + since(fresh.reduce((a, b) => (a.first_seen > b.first_seen ? a : b)).first_seen) : "nothing new yet" },
     { l: "Best discount", v: best ? Math.round(best.discount_pct) + "%" : "–",
-      n: best ? fmt(best.total) + " vs " + fmt(best.baseline) : "no baseline yet" },
+      n: best ? fmt(best.total) + " vs " + fmt(best.baseline) + " average" : "no market price yet" },
   ];
   $("tiles").innerHTML = rows.map(r =>
     `<div class="tile"><div class="label">${r.l}</div><div class="value">${r.v}</div><div class="note">${r.n}</div></div>`).join("");
@@ -459,7 +472,7 @@ const COLS = [
   { k: "title", l: "Listing" },
   { k: "condition", l: "Condition" },
   { k: "total", l: "Total", num: true },
-  { k: "baseline", l: "Market", num: true },
+  { k: "baseline", l: "Market avg", num: true },
   { k: "discount_pct", l: "Under market", num: true },
   { k: "seller_score", l: "Seller", num: true },
   { k: "first_seen", l: "Seen" },
@@ -491,6 +504,15 @@ function flagBadges(flags) {
   }).join("");
 }
 
+// Under the market average: the low and high of the sample it came from.
+function marketRange(r) {
+  if (!r.baseline || !r.market_max) return "";
+  const tip = "Average of " + (r.market_n || "the") + " comparable listings"
+    + (r.market_src ? " (" + r.market_src + ")" : "")
+    + ". Low and high are the cheapest and dearest of them, once far-off prices and the top and bottom tenth are left out.";
+  return `<div class="meta" title="${esc(tip)}" style="white-space:nowrap">${fmt0(r.market_min)} – ${fmt0(r.market_max)}</div>`;
+}
+
 function table() {
   const rows = visibleRows(), host = $("tableHost");
   if (!rows.length) {
@@ -511,7 +533,7 @@ function table() {
     const disc = r.baseline
       ? `<div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
          <span class="bar-label">${Math.round(r.discount_pct)}%</span></div>`
-      : `<span class="meta">no baseline</span>`;
+      : `<span class="meta">no market price</span>`;
     const src = (r.source || "eBay");
     return `<tr>
       <td>${img}</td>
@@ -525,7 +547,7 @@ function table() {
       <td>${esc(r.condition)}<div class="meta">${qualityChip(r)}</div>${
         r.specs ? `<div class="meta spec" title="Specs as stated by the listing">${esc(r.specs)}</div>` : ""}</td>
       <td class="num">${fmt(r.total)}</td>
-      <td class="num">${r.baseline ? fmt(r.baseline) : "–"}</td>
+      <td class="num">${r.baseline ? fmt(r.baseline) : "–"}${marketRange(r)}</td>
       <td>${disc}</td>
       <td class="num">${r.seller_score || 0}<div class="meta">${r.seller_pct || 0}%</div></td>
       <td>${since(r.first_seen)}</td></tr>`;
@@ -549,17 +571,17 @@ function table() {
 
 function sparkline(points, w, h) {
   if (points.length < 2) return `<div class="meta">Not enough history yet.</div>`;
-  const vals = points.map(p => p.median);
+  const vals = points.map(p => p.avg ?? p.median);
   const min = Math.min(...vals), max = Math.max(...vals);
   const pad = (max - min) * 0.15 || 1, lo = min - pad, hi = max + pad;
   const x = i => 4 + (i / (points.length - 1)) * (w - 8);
   const y = v => h - 14 - ((v - lo) / (hi - lo)) * (h - 26);
-  const d = points.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.median).toFixed(1)).join(" ");
+  const d = points.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.avg ?? p.median).toFixed(1)).join(" ");
   const last = points[points.length - 1];
-  return `<svg width="100%" viewBox="0 0 ${w} ${h}" role="img" aria-label="Market median over time">
+  return `<svg width="100%" viewBox="0 0 ${w} ${h}" role="img" aria-label="Market average over time">
     <line x1="4" y1="${h - 12}" x2="${w - 4}" y2="${h - 12}" stroke="var(--field-border)" stroke-width="1"/>
     <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-    <circle cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.median).toFixed(1)}" r="4"
+    <circle cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.avg ?? last.median).toFixed(1)}" r="4"
       fill="var(--accent)" stroke="var(--panel)" stroke-width="2"/></svg>`;
 }
 
@@ -574,10 +596,12 @@ function charts() {
   if (!keys.length) { host.innerHTML = ""; return; }
   host.innerHTML = keys.map(k => {
     const pts = DATA.history[k], last = pts[pts.length - 1], first = pts[0];
-    const delta = first.median ? ((last.median - first.median) / first.median) * 100 : 0;
-    return `<div class="card"><h3>${esc(k)} — market median</h3>
-      <div class="cap">${fmt(last.median)} now${pts.length > 1 ?
-        " · " + (delta >= 0 ? "+" : "") + delta.toFixed(1) + "% since first scan" : ""}</div>
+    const a0 = first.avg ?? first.median, a1 = last.avg ?? last.median;
+    const delta = a0 ? ((a1 - a0) / a0) * 100 : 0;
+    return `<div class="card"><h3>${esc(k)} — market average</h3>
+      <div class="cap">${fmt(a1)} now${last.hi ? " · low " + fmt0(last.lo) + " – high " + fmt0(last.hi) : ""}${pts.length > 1 ?
+        " · " + (delta >= 0 ? "+" : "") + delta.toFixed(1) + "% since first scan" : ""}${
+        last.n ? `<br><span class="meta">${last.n} listings${last.sources ? ": " + esc(last.sources) : ""}</span>` : ""}</div>
       ${sparkline(pts, 300, 92)}</div>`;
   }).join("");
 }
@@ -765,6 +789,30 @@ function fillSettings() {
       <button data-test="${s2.k}">Test</button>
     </div>`).join("");
 
+  const market = s.market_sources || {};
+  $("marketToggles").innerHTML = [
+    { k: "ebay", n: "eBay UK", d: s.has_keys === false
+        ? "Live Buy It Now listings — the biggest sample by far. Not counted yet: no API keys saved."
+        : "Live Buy It Now listings — the biggest sample by far. One API call per watch each time prices are refreshed." },
+    { k: "cex", n: "CeX", d: "CeX's sell price for every matching box, in stock or not. Tested and warrantied, so it sits above private sales." },
+    { k: "backmarket", n: "Back Market", d: "Refurbished prices with a warranty." },
+    { k: "musicmagpie", n: "musicMagpie", d: "Refurbished prices, cheapest in-stock grade per model." },
+    { k: "cashconverters", n: "Cash Converters", d: "High-street pawn stock — the closest the shops get to private-sale prices." },
+  ].map(m => `
+    <div class="wrow" style="grid-template-columns:44px 1fr;border:none;padding:8px 0">
+      <button class="toggle" aria-pressed="${market[m.k] !== false}" data-market="${m.k}"></button>
+      <div><div class="wname">${m.n}</div><div class="wnote">${m.d}</div></div>
+    </div>`).join("");
+  $("marketToggles").querySelectorAll("[data-market]").forEach(b => b.onclick = async () => {
+    const next = b.getAttribute("aria-pressed") !== "true";
+    b.setAttribute("aria-pressed", String(next));
+    const res = await api("/api/market-sources", { [b.dataset.market]: next });
+    if (!res.ok) {
+      b.setAttribute("aria-pressed", String(!next));
+      alert(res.error || "Keep at least one market source switched on.");
+    } else if (DATA.settings) DATA.settings.market_sources = res.market_sources || DATA.settings.market_sources;
+  });
+
   $("siteToggles").querySelectorAll("[data-site]").forEach(b => b.onclick = async () => {
     const next = b.getAttribute("aria-pressed") !== "true";
     b.setAttribute("aria-pressed", String(next));
@@ -832,8 +880,8 @@ function applyStatus(st) {
     b.innerHTML = `<div class="banner bad"><strong>Scan problem.</strong> ${esc(st.last_error)}</div>`;
   } else if (DATA.settings && DATA.settings.has_keys === false) {
     b.innerHTML = `<div class="banner"><strong>No eBay API keys yet.</strong>
-      CeX can be scanned without them, but eBay listings and the market comparison
-      need them — about ten minutes to get from developer.ebay.com, under Settings.
+      The shops are scanned without them, and the market price comes from the shops alone;
+      eBay listings need the keys — about ten minutes to get from developer.ebay.com, under Settings.
       "Load demo data" shows how it looks in the meantime.</div>`;
   } else b.innerHTML = "";
 }

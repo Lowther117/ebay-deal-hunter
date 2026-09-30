@@ -266,6 +266,8 @@ class Handler(BaseHTTPRequestHandler):
                 "baseline_max_age_hours": cfg.get("baseline_max_age_hours", 12),
                 "has_keys": all(core.credentials()),
                 "sites": cfg.get("sites") or {"ebay": True},
+                "market_sources": {**core.DEFAULT_CONFIG["market_sources"],
+                                   **(cfg.get("market_sources") or {})},
                 "feed_sources": __import__("dealhunter.sources", fromlist=["x"]).FEED_SOURCE_LABELS,
                 "allowance": allowance(cfg),
                 "data_dir": str(DATA_DIR),
@@ -387,6 +389,28 @@ class Handler(BaseHTTPRequestHandler):
                     core.log(f"eBay test failed: {exc}")
                     return self._send(200, {"ok": False, "detail": str(exc)[:220]})
             return self._send(400, {"ok": False, "detail": "unknown site"})
+
+        if url.path == "/api/market-sources":
+            with CONFIG_LOCK:
+                cfg = core.load_config()
+                chosen = {**core.DEFAULT_CONFIG["market_sources"],
+                          **(cfg.get("market_sources") or {})}
+                for key in core.MARKET_LABELS:
+                    if key in body:
+                        chosen[key] = bool(body[key])
+                if not any(chosen.get(k) for k in core.MARKET_LABELS):
+                    return self._send(200, {"ok": False, "error":
+                                            "Keep at least one market source switched on."})
+                cfg["market_sources"] = chosen
+                # Saved prices older than this are ignored, so the next scan
+                # re-samples with the new choice rather than waiting for them
+                # to expire. The history itself is kept.
+                cfg["market_sources_changed"] = core.now_utc()
+                write_config(cfg)
+            core.log("Market price sources: " + ", ".join(
+                core.MARKET_LABELS[k] for k in core.MARKET_LABELS if chosen.get(k))
+                + ". Prices will be re-sampled on the next scan.")
+            return self._send(200, {"ok": True, "market_sources": chosen})
 
         if url.path == "/api/sites":
             with CONFIG_LOCK:

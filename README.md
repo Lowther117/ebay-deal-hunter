@@ -6,7 +6,9 @@ shows them in a proper app window on your Mac and your Windows PC.
 - **UK only, always** — no import duty, VAT handling or customs fees, ever
 - **Condition-aware** — broken, parts-only, iCloud-locked and "case only" listings
   never reach you
-- Scores every find against the **median price of comparable live listings**
+- Scores every find against the **market average** — the average asking price of
+  comparable live listings pooled from eBay, CeX, Back Market, musicMagpie and Cash
+  Converters — and shows the **low and high** of that sample on every row
 - **68 watches across 17 categories** — tech, games, home, garden, sport, music, watches,
   collectables and the car — each switchable on or off from the app
 - **Seven searchable sources**: eBay Buy It Now, eBay Refurbished, eBay auctions
@@ -71,9 +73,10 @@ No approval wait, no cost. eBay allows 5,000 searches a day on these keys. A ful
 with everything on costs about 120 of them, and the app counts what it spends so
 automatic scanning cannot reach the limit (see *Rate limited* under Troubleshooting).
 
-CeX needs no keys at all. Without eBay keys the app still scans CeX, but the eBay
-sources are skipped and CeX finds show *no baseline* — the market comparison comes
-from eBay's live listings, so it needs the keys too.
+The shops need no keys at all. Without eBay keys the app still scans them, the eBay
+sources are skipped, and the market price is worked out from the shops alone (see
+*How the market price is worked out*). Adding the keys brings eBay's much larger
+sample into it.
 
 ---
 
@@ -141,7 +144,7 @@ site, or search. Click any row to open that listing in your browser.
 **Feeds** — HotUKDeals posts and r/hardwareswapuk sales that match a watch. Kept
 apart from Deals on purpose: a HotUKDeals price is a new item from a shop, not the
 used market, and a Reddit post is a private person with no buyer protection.
-Everything that matches is shown, with the discount against the used-market median
+Everything that matches is shown, with the discount against the market average
 where there is one — the feed is for noticing, not gating.
 
 **Watches** — every watch with a toggle, a price cap, a minimum discount and a
@@ -152,7 +155,7 @@ word lists, and what to do when a listing doesn't state a spec — keep it with 
 *spec unclear* flag (default) or drop it. RAM and storage are read off eBay titles
 ("16GB RAM 512GB SSD", "8GB/256GB", "RAM: 16GB"); CeX states them as attributes, so
 nothing is guessed there. Brand and CPU match whole words in the title or CeX's own
-brand and CPU fields. The market baseline is narrowed the same way, so a 16GB watch is
+brand and CPU fields. The market price is narrowed the same way, so a 16GB watch is
 compared against 16GB machines. Each deal row shows the specs it was read as having.
 **Search other sites…** opens the same hunt on Back Market, CeX, musicMagpie, Amazon
 Warehouse, Cash Converters, Vinted, Gumtree or Facebook Marketplace.
@@ -167,6 +170,38 @@ as long as the app is open - or less often than that if the interval would use u
 daily allowance. The window is dark by default; the **Light** / **Dark**
 button in the toolbar (or **Ctrl+D**) switches, and the choice is remembered in
 `config.json` as `dark`.
+
+### How the market price is worked out
+
+Every find is scored against one number per watch: the **market average**. The
+**Market avg** column shows it, with the **low – high** of the sample underneath;
+hover that range for how many listings it came from and which sources.
+
+1. **Sample.** The watch's *market baseline query* (the ordinary name for the thing,
+   editable on the Watches tab) is searched on every source ticked under
+   **Settings → Market price**: eBay Buy It Now (when API keys are saved), CeX,
+   Back Market, musicMagpie and Cash Converters. The bargain cap is ignored — the
+   window is £1 up to twenty times the cap — because the going rate sits well above
+   what is being hunted. CeX is sampled on its sell price for every matching box,
+   in stock or not.
+2. **Clean.** The same gates as the hunt: UK only, nothing broken or parts-only, none
+   of the "not actually the item" words, the watch's required words and spec filters.
+3. **Pool and trim.** All the prices go into one list. Anything under a quarter or
+   over four times the middle of it is dropped (a charger, a job lot), then the top
+   and bottom tenth are trimmed off (ten or more listings only).
+4. **Average, low, high.** The average of what is left is the market price; the
+   cheapest and dearest of what is left are the low and high.
+
+At least five clean comparables are needed (`market_min_sample`), otherwise the find
+is listed with no discount figure. The price is kept for 12 hours
+(`baseline_max_age_hours`) and changing the market sources re-samples everything on
+the next scan. The market sources are separate from **Where to search**: CeX can set
+the price without its stock filling the table, and the other way round.
+
+Two things to know. These are **asking** prices, not sold prices — sold
+data isn't available to an app like this. And shop prices (tested, warrantied) sit
+above private sales, so with shops in the pool the average runs a little higher than
+an eBay-only one would; untick them under Market price if you want it strict.
 
 ### What it watches
 
@@ -246,7 +281,7 @@ Enforced in three places, with no override:
 3. A title blocklist catches overseas sellers hiding behind UK-looking listings —
    *import, ships from China, US version, 110v, EU plug, no UK plug, customs*.
 
-The market baseline gets the same treatment, so you're compared against UK prices.
+The market price gets the same treatment, so you're compared against UK prices.
 
 ---
 
@@ -402,8 +437,10 @@ A big *rejected on condition* number means the query is pulling in parts listing
 tighten it, or relax that watch from Strict to Balanced. A big *non-UK* number means
 the filter is doing its job.
 
-**"only N clean comparables — skipping score"** — that watch's baseline query is too
-narrow or too odd. It should read like a title a normal seller would write.
+**"only N clean comparables (need 5) — not scoring against the market this time"** —
+across every market source there were too few fair comparisons. That watch's baseline
+query is too narrow or too odd; it should read like a title a normal seller would
+write. Finds are still listed, just without a discount figure.
 
 **Window doesn't open, app quits immediately** — run `python3 app.py --browser` from a
 terminal in the app folder and read the error. It falls back to your browser rather
@@ -418,7 +455,7 @@ timing out on every one; it retries each call once first. Auto will try again on
 next interval.
 
 **Rate limited / "Paused to stay inside eBay's daily allowance"** — eBay allows 5,000
-searches a day. Each watch costs about three per scan (the market median is cached for
+searches a day. Each watch costs about three per scan (the market price is kept for
 12 hours), so 39 watches on is roughly 120 a scan. The app counts every eBay call it
 makes over a rolling 24 hours (the count survives closing the app) and Auto is built
 so it cannot reach the limit:
