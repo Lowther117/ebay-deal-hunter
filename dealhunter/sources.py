@@ -40,6 +40,7 @@ import urllib.request
 from datetime import datetime, timezone
 from xml.etree import ElementTree
 
+from . import __version__
 from .core import (CEX_USER_AGENT, CexError, EbayError, _open, cex_queries, is_relevant, log,
                    money, parse_specs, title_has_all)
 
@@ -529,6 +530,8 @@ def fetch_hotukdeals(cfg: dict) -> list[dict]:
             seen.add(did)
             desc = html.unescape(item.findtext("description") or "")
             price = _price_in(desc)
+            if price <= 0:
+                continue                 # no price in the post - it can't be scored
             mm = re.search(r"<strong>[^<]*?-\s*([^<]+)</strong>", desc)
             merchant = mm.group(1).strip() if mm else ""
             img = re.search(r'<img[^>]+src="([^"]+)"', desc)
@@ -545,7 +548,7 @@ def fetch_hotukdeals(cfg: dict) -> list[dict]:
 
 
 REDDIT_HWS = "https://www.reddit.com/r/hardwareswapuk/new.json?limit=100&raw_json=1"
-REDDIT_UA = "ebay-deal-hunter/2.5 (personal desktop app; read-only)"
+REDDIT_UA = f"ebay-deal-hunter/{__version__} (personal desktop app; read-only)"
 
 
 def fetch_reddit_hws(cfg: dict) -> list[dict]:

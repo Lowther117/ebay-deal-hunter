@@ -94,7 +94,6 @@ DEFAULT_CONFIG = {
     "currency": "GBP",
     "poll_interval_minutes": 40,
     "ebay_daily_call_budget": 4500,
-    "open_dashboard_on_new_hits": False,
     "min_seller_feedback_pct": 90.0,
     "min_seller_feedback_score": 5,
     "baseline_sample_size": 100,
@@ -645,15 +644,18 @@ def biggest_image(url: str) -> str:
     return re.sub(r"/s-l\d+\.(jpg|jpeg|png|webp)", r"/s-l500.\1", url, flags=re.I)
 
 
-def normalise(item: dict) -> dict:
+def normalise(item: dict, *, use_bid: bool = False) -> dict:
     price = money((item.get("price") or {}).get("value"))
     currency = (item.get("price") or {}).get("currency", "GBP")
 
     # On an auction, `price` is the start price - what matters is the bid so far.
+    # Only the auction scan asks for that (use_bid): a Buy It Now search also
+    # returns auctions that carry a Buy It Now price, and there `price` is what
+    # it actually costs - the current bid would make it look like a steal.
     bid = item.get("currentBidPrice") or {}
     bid_count = int(item.get("bidCount") or 0)
     is_auction = "AUCTION" in (item.get("buyingOptions") or [])
-    if is_auction and bid.get("value") is not None:
+    if use_bid and is_auction and bid.get("value") is not None:
         price = money(bid["value"])
         currency = bid.get("currency", currency)
 
@@ -953,12 +955,36 @@ WORD_RE = re.compile(r"[a-z0-9']+")
 _OBJECT_NEGATORS = {"no", "without", "nothing"}
 
 
+# These describe how little something has been used ("hardly used", "never
+# dropped"), so they only negate a claim they sit directly in front of
+# ("barely working") - or "never been in working order".
+_ADVERB_NEGATORS = {"hardly", "barely", "never"}
+
+# A negation never reaches across a clause break: "Never dropped, fully
+# working" or "Seller is not responsible. Works perfectly" are not negated.
+# A hyphen only counts with space around it, so "non-functional" still reads
+# as "non functional".
+_CLAUSE_BREAK_RE = re.compile(r"[,.;:!|/()\u2013\u2014]|\s-+\s|\s-+$|^-+\s")
+
+
+def _preceding_words(low: str, start: int) -> list[str]:
+    """The few words before a claim, stopping at the start of its clause."""
+    before = low[:start]
+    breaks = list(_CLAUSE_BREAK_RE.finditer(before))
+    if breaks:
+        before = before[breaks[-1].end():]
+    return WORD_RE.findall(before)[-NEGATION_LOOKBACK_WORDS:]
+
+
 def _negator_in(preceding: list[str]) -> str | None:
     for i, w in enumerate(preceding):
         if w not in NEGATORS:
             continue
-        if (w in _OBJECT_NEGATORS and i != len(preceding) - 1
-                and preceding[i + 1] != "longer"):
+        last = i == len(preceding) - 1
+        nxt = preceding[i + 1] if not last else ""
+        if w in _OBJECT_NEGATORS and not last and nxt != "longer":
+            continue
+        if w in _ADVERB_NEGATORS and not last and not (w == "never" and nxt == "been"):
             continue
         return w
     return None
@@ -979,7 +1005,7 @@ def has_working_evidence(title: str, working_terms: list[str]) -> str | None:
             continue
         pattern = r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])"
         for match in re.finditer(pattern, low):
-            preceding = WORD_RE.findall(low[:match.start()])[-NEGATION_LOOKBACK_WORDS:]
+            preceding = _preceding_words(low, match.start())
             if not _negator_in(preceding):
                 return term
     return None
@@ -999,7 +1025,7 @@ def has_negated_working_claim(title: str, working_terms: list[str]) -> str | Non
             continue
         pattern = r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])"
         for match in re.finditer(pattern, low):
-            preceding = WORD_RE.findall(low[:match.start()])[-NEGATION_LOOKBACK_WORDS:]
+            preceding = _preceding_words(low, match.start())
             hit = _negator_in(preceding)
             if hit and hit not in ("needs", "requires"):  # "needs charger" isn't a fault
                 return f"{hit} {term}"
@@ -1221,6 +1247,12 @@ def open_db() -> sqlite3.Connection:
     return conn
 
 
+# Market rows written by "Load demo data" start with this in `sources`. They
+# share the real watch names (so the chart has something to draw) but must
+# never be scored against: latest_market skips them and Clear removes them.
+DEMO_MARKET_TAG = "demo"
+
+
 def latest_market(conn: sqlite3.Connection, watch: str, max_age_hours: float,
                   not_before: str = "") -> dict | None:
     """The saved market price for a watch, if it is fresh enough:
@@ -1228,8 +1260,8 @@ def latest_market(conn: sqlite3.Connection, watch: str, max_age_hours: float,
     market sources were last changed - anything sampled before it is stale."""
     row = conn.execute(
         "SELECT mean, lo, hi, sample_n, sources, ts FROM baselines "
-        "WHERE watch=? ORDER BY id DESC LIMIT 1",
-        (watch,),
+        "WHERE watch=? AND COALESCE(sources, '') NOT LIKE ? ORDER BY id DESC LIMIT 1",
+        (watch, DEMO_MARKET_TAG + "%"),
     ).fetchone()
     if not row or not row["mean"]:
         return None                     # nothing yet, or a pre-2.6 median-only row
@@ -1253,18 +1285,20 @@ def latest_baseline(conn: sqlite3.Connection, watch: str, max_age_hours: float):
     return market["avg"] if market else None
 
 
-def save_market(conn, watch: str, stats: dict, sources: str) -> None:
+def save_market(conn, watch: str, stats: dict, sources: str, ts: str = "") -> None:
     conn.execute(
         "INSERT INTO baselines (watch, ts, median, sample_n, p10, p90, mean, lo, hi, sources) "
         "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (watch, now_utc(), stats["median"], stats["n"], stats["p10"], stats["p90"],
+        (watch, ts or now_utc(), stats["median"], stats["n"], stats["p10"], stats["p90"],
          stats["avg"], stats["lo"], stats["hi"], sources),
     )
     conn.commit()
 
 
-def upsert_item(conn, rec: dict) -> bool:
-    """Insert or update. Returns True if this is a brand-new hit."""
+def upsert_item(conn, rec: dict) -> bool | None:
+    """Insert or update. Returns True if this is a brand-new hit, False if an
+    existing row was updated, and None if the row was left alone because
+    another watch already holds the listing."""
     existing = conn.execute(
         "SELECT item_id, total, watch, is_live FROM items WHERE item_id=?", (rec["item_id"],)
     ).fetchone()
@@ -1273,7 +1307,7 @@ def upsert_item(conn, rec: dict) -> bool:
         # Another watch already holds this listing. Leave its row alone:
         # writing this watch's market price over it is how a strap filed under
         # one watch ended up scored against a different watch's average.
-        return False
+        return None
     if existing:
         conn.execute(
             """UPDATE items SET title=?, price=?, shipping=?, total=?, condition=?,
@@ -1358,6 +1392,8 @@ def market_stats(values) -> dict | None:
 
     avg  - the mean of the sample once far-off prices and the top and bottom
            tenth are gone. This is what "under market" is measured against.
+           Under ten listings nothing can be trimmed, so the median is used
+           instead - one dear outlier in seven would otherwise lift the mean.
     lo   - the cheapest listing left in that sample.
     hi   - the dearest listing left in that sample.
     """
@@ -1367,7 +1403,8 @@ def market_stats(values) -> dict | None:
     vals = [p[0] for p in pairs]
     prices = [p[0] for p in core]
     return {
-        "avg": round(statistics.fmean(prices), 2),
+        "avg": round(statistics.fmean(prices) if len(prices) >= 10
+                     else statistics.median(prices), 2),
         "lo": round(prices[0], 2),
         "hi": round(prices[-1], 2),
         "median": round(statistics.median(prices), 2),
@@ -1640,7 +1677,7 @@ def scan_watch_auctions(client, conn, watch, cfg, baseline) -> tuple[int, int]:
     cutoff = datetime.now(timezone.utc) + timedelta(hours=hours)
     records = []
     for item in raw:
-        rec = normalise(item)
+        rec = normalise(item, use_bid=True)
         ends = rec.get("ends") or ""
         if ends:
             try:
@@ -1879,6 +1916,7 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
     off_spec = 0
     off_query = 0
     not_same = 0
+    held_elsewhere = 0
     for rec in records:
         if not rec.get("item_id"):
             continue
@@ -1963,8 +2001,12 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
             quality=verdict,
             quality_why=why,
         )
+        saved = upsert_item(conn, rec)
+        if saved is None:
+            held_elsewhere += 1         # another watch already has this listing
+            continue
         kept += 1
-        if upsert_item(conn, rec):
+        if saved:
             new_hits += 1
             disc_txt = f"{discount:.0f}% under market" if discount is not None else "no market price"
             log(f"  NEW  {cfg['currency']} {rec['total']:>8.2f}  ({disc_txt}, {verdict}, {source})  {rec['title'][:58]}")
@@ -1975,6 +2017,8 @@ def process_records(conn, watch, cfg, records, baseline, source) -> tuple[int, i
         extra += f" | {off_query} not what was searched for"
     if not_same:
         extra += f" | {not_same} priced too far under market to be the item"
+    if held_elsewhere:
+        extra += f" | {held_elsewhere} already shown under another watch"
     log(f"  [{source}] {kept} kept | {rejected} rejected on condition | "
         f"{off_spec} off-spec | {non_uk} non-UK{extra} | {new_hits} new")
     return kept, new_hits
@@ -2073,14 +2117,18 @@ def run_demo(conn, cfg) -> tuple[int, int]:
             "specs": parse_specs(title),
         }
         upsert_item(conn, rec)
+    # One market row per day for the last eight days, tagged as demo so a real
+    # scan never scores listings against these made-up numbers.
+    now = datetime.now(timezone.utc)
     for watch in watches:
         base = rng.uniform(120, 320)
         for day in range(8):
             avg = round(base * (1 + rng.uniform(-0.06, 0.06)), 2)
+            ts = (now - timedelta(days=7 - day)).isoformat(timespec="seconds")
             save_market(conn, watch, {"avg": avg, "median": round(avg * 0.97, 2),
                                       "lo": round(avg * 0.72, 2), "hi": round(avg * 1.31, 2),
                                       "p10": round(avg * 0.78, 2), "p90": round(avg * 1.24, 2),
-                                      "n": 40}, "eBay 28, CeX 8, Back Market 4")
+                                      "n": 40}, DEMO_MARKET_TAG + " (eBay 28, CeX 8, Back Market 4)", ts)
     conn.commit()
     return len(DEMO_TITLES), len(DEMO_TITLES)
 
@@ -2126,14 +2174,35 @@ def expire_stale(conn, cfg) -> int:
     permanently at the top.
     """
     days = int(cfg.get("listing_expiry_days", 7) or 7)
+    now = datetime.now(timezone.utc)
     cur = conn.execute(
         "UPDATE items SET is_live=0 WHERE is_live=1 AND last_seen < ?",
-        ((datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds"),),
+        ((now - timedelta(days=days)).isoformat(timespec="seconds"),),
     )
+    retired = cur.rowcount
+    if retired:
+        log(f"Retired {retired} listing(s) not seen in {days} days.")
+
+    # An auction that has ended is gone whenever it was last seen. `ends` is
+    # eBay's itemEndDate ("...T12:00:00.000Z") or an ISO time with an offset,
+    # so it is parsed rather than compared as text.
+    ended = []
+    for row in conn.execute(
+        "SELECT item_id, ends FROM items WHERE is_live=1 AND COALESCE(ends, '') != ''"
+    ).fetchall():
+        try:
+            when = datetime.fromisoformat(str(row["ends"]).strip().replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when < now:
+            ended.append((row["item_id"],))
+    if ended:
+        conn.executemany("UPDATE items SET is_live=0 WHERE item_id=?", ended)
+        log(f"Retired {len(ended)} auction(s) that have ended.")
     conn.commit()
-    if cur.rowcount:
-        log(f"Retired {cur.rowcount} listing(s) not seen in {days} days.")
-    return cur.rowcount
+    return retired + len(ended)
 
 
 def collect_dashboard_data(conn, cfg) -> dict:
@@ -2958,7 +3027,6 @@ STARTER_CONFIG = {
     "currency": "GBP",
     "poll_interval_minutes": 40,
     "ebay_daily_call_budget": 4500,
-    "open_dashboard_on_new_hits": False,
     "min_seller_feedback_pct": 90.0,
     "min_seller_feedback_score": 5,
     "baseline_sample_size": 100,

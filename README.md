@@ -17,8 +17,9 @@ shows them in a proper app window on your Mac and your Windows PC.
   Shopify shop** you add by its web address
 - **Two deal feeds** on their own tab: HotUKDeals and r/hardwareswapuk, matched
   against your watches
-- **Ten one-click sites** for everything that can't be searched: Vinted, Gumtree,
-  Facebook Marketplace, Amazon Warehouse and the rest
+- **Ten one-click links** per watch: Vinted, Gumtree, Facebook Marketplace and Amazon
+  Warehouse, which can't be searched, plus the same search on eBay, CeX, Back Market,
+  musicMagpie and Cash Converters
 - The engine is pure Python standard library — no database server, no cloud, nothing
   leaves your machine except the searches themselves
 
@@ -35,7 +36,9 @@ python3 app.py
 ```
 
 The window opens, and **Load demo data** on the Settings tab fills it with examples so
-you can see how it works before doing anything else.
+you can see how it works before doing anything else. Demo market prices are marked
+as demo and never used to score a real scan; **Clear all saved listings** removes
+them along with the demo listings.
 
 To make it a real double-clickable app, see *Building* below.
 
@@ -194,8 +197,10 @@ hover that range for how many listings it came from and which sources.
 3. **Pool and trim.** All the prices go into one list. Anything under a quarter or
    over four times the middle of it is dropped (a charger, a job lot), then the top
    and bottom tenth are trimmed off (ten or more listings only).
-4. **Average, low, high.** The average of what is left is the market price; the
-   cheapest and dearest of what is left are the low and high.
+4. **Average, low, high.** The average of what is left is the market price (under
+   ten listings, where nothing can be trimmed, the middle price - the median - is
+   used instead, so one odd listing can't drag it); the cheapest and dearest of what
+   is left are the low and high.
 
 The hunt applies the same two rules to what the shops and feeds return. A result that
 doesn't name what the watch searches for is dropped ("not what was searched for" in
@@ -380,7 +385,7 @@ the table beside eBay's, judged and scored identically.
   condition wording is not second-guessed.
 
   Shop results are cached in memory for `shop_cache_hours` (6) so an automatic scan
-  every 40 minutes doesn't hit three shops with a few hundred requests each time.
+  every 40 minutes doesn't hit every shop with a few hundred requests each time.
   None of these is a published API; each has a Test button, and one that starts
   refusing is skipped for the rest of the scan while the others carry on.
 
@@ -390,14 +395,15 @@ the watch's own excludes and spec filters). They appear on the **Feeds** tab.
 
 - **HotUKDeals** — on by default. The site's `rss/new` and `rss/hot` feeds; add tag
   feeds (`hukd_tags: ["laptop"]` in config.json) for more depth. Price and merchant
-  come from each item's summary.
+  come from each item's summary; deals with no price in it are skipped.
 - **r/hardwareswapuk** — off by default. Reddit's public listing of the subreddit;
   the `[H]` part of a post title is what's for sale and the price is read from the
   body. Posts with no price are skipped. This one could not be verified from the
   machine that built it — press Test; if Reddit is refusing, it stays off.
 
-**Quick links** — Back Market, musicMagpie, Amazon Warehouse, Cash Converters,
-Vinted, Gumtree and Facebook Marketplace. The app builds the equivalent search URL,
+**Quick links** — Back Market, CeX, Vinted, musicMagpie, Amazon Warehouse, Cash
+Converters, eBay Buy It Now, eBay auctions ending, Gumtree and Facebook Marketplace.
+The app builds the equivalent search URL,
 with your price cap applied where the site supports it, and opens it in your
 browser. Scraping them would break within weeks, get the machine blocked, and
 breaches their terms; a link that opens the right search does neither and never

@@ -10,6 +10,7 @@ drive it either.
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import sqlite3
 import threading
@@ -260,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
             data["status"] = STATE.snapshot()
             data["watch_config"] = cfg.get("watches", [])
             data["settings"] = {
-                "poll_interval_minutes": cfg.get("poll_interval_minutes", 20),
+                "poll_interval_minutes": cfg.get("poll_interval_minutes", 40),
                 "quality_mode": cfg.get("quality_mode", "balanced"),
                 "min_seller_feedback_pct": cfg.get("min_seller_feedback_pct", 90),
                 "min_seller_feedback_score": cfg.get("min_seller_feedback_score", 5),
@@ -310,6 +311,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
 
         if url.path == "/api/scan":
+            for key in ("watch", "group"):
+                if not _names_ok(body.get(key)):
+                    return self._send(400, {"error": f"'{key}' must be a name or a list of names"})
             started = STATE.start_scan(
                 names=body.get("watch"), group=body.get("group"),
                 demo=bool(body.get("demo")),
@@ -464,6 +468,9 @@ class Handler(BaseHTTPRequestHandler):
             conn = core.open_db()
             try:
                 conn.execute("DELETE FROM items")
+                # demo market rows too - real ones are kept for the chart
+                conn.execute("DELETE FROM baselines WHERE sources LIKE ?",
+                             (core.DEMO_MARKET_TAG + "%",))
                 conn.commit()
             finally:
                 conn.close()
@@ -496,6 +503,24 @@ NUMERIC_WATCH_FIELDS = {
 LIST_WATCH_FIELDS = ("brands", "cpus", "require_terms", "exclude_terms")
 
 
+def _number(value) -> float:
+    """A finite number from a JSON value, or ValueError. JSON from the page
+    can carry Infinity / NaN, which float() accepts and int() chokes on."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("not a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("not a finite number")
+    return number
+
+
+def _names_ok(value) -> bool:
+    """A watch or group selector: nothing, a name, or a list of names."""
+    if value is None or isinstance(value, str):
+        return True
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
 def _terms(value) -> list[str]:
     if isinstance(value, str):
         value = value.split(",")
@@ -509,7 +534,8 @@ def write_config(cfg) -> None:
 
 
 def update_watch(body: dict) -> dict:
-    name = (body.get("name") or "").strip()
+    name = body.get("name") or ""
+    name = name.strip() if isinstance(name, str) else ""
     if not name:
         return {"ok": False, "error": "No watch named."}
 
@@ -528,13 +554,15 @@ def update_watch(body: dict) -> dict:
         for field, (lo, hi) in NUMERIC_WATCH_FIELDS.items():
             if field in body:
                 try:
-                    value = int(float(body[field]))
+                    value = int(_number(body[field]))
                 except (TypeError, ValueError):
                     return {"ok": False, "error": f"'{field}' must be a number."}
                 target[field] = max(lo, min(hi, value))
 
         for field in LIST_WATCH_FIELDS:
             if field in body:
+                if not isinstance(body[field], (str, list)) and body[field] is not None:
+                    return {"ok": False, "error": f"'{field}' must be text or a list."}
                 target[field] = _terms(body[field])
         for field in ("query", "baseline_query"):
             if field in body:
@@ -577,7 +605,7 @@ def update_settings(body: dict) -> dict:
         for field, (lo, hi, kind) in ALLOWED_SETTINGS.items():
             if field in body:
                 try:
-                    value = kind(float(body[field]))
+                    value = kind(_number(body[field]))
                 except (TypeError, ValueError):
                     return {"ok": False, "error": f"'{field}' must be a number."}
                 cfg[field] = max(lo, min(hi, value))
@@ -625,7 +653,7 @@ def build_snapshot(out_path: Path) -> Path:
                       "next_auto_in": None, "log": ["Saved snapshot - no live engine."]}
     data["watch_config"] = cfg.get("watches", [])
     data["settings"] = {
-        "poll_interval_minutes": cfg.get("poll_interval_minutes", 20),
+        "poll_interval_minutes": cfg.get("poll_interval_minutes", 40),
         "quality_mode": cfg.get("quality_mode", "balanced"),
         "min_seller_feedback_pct": cfg.get("min_seller_feedback_pct", 90),
         "min_seller_feedback_score": cfg.get("min_seller_feedback_score", 5),

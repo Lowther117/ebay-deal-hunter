@@ -398,13 +398,15 @@ async function api(path, body) {
 
 // Links must be handed to the real browser: inside the app's own window a
 // normal link either does nothing or replaces the app itself.
+// Only http(s) links are ever opened. If the server refuses one, that is the
+// answer - the page only falls back to window.open when the request fails.
 async function openExternal(url) {
-  if (!url) return;
-  if (typeof STATIC_DATA !== "undefined") { window.open(url, "_blank"); return; }
+  url = String(url || "").trim();
+  if (!/^https?:\/\/[^\s]/i.test(url)) return;
+  if (typeof STATIC_DATA !== "undefined") { window.open(url, "_blank", "noopener"); return; }
   try {
-    const res = await api("/api/open", { url });
-    if (res && res.error) window.open(url, "_blank");
-  } catch (e) { window.open(url, "_blank"); }
+    await api("/api/open", { url });
+  } catch (e) { window.open(url, "_blank", "noopener"); }
 }
 
 function since(iso) {
@@ -750,7 +752,7 @@ function fillSettings() {
   const focus = document.activeElement;
   const editing = focus && $("panel-settings").contains(focus) && /^(INPUT|SELECT)$/.test(focus.tagName);
   if (!editing) {
-    $("interval").value = s.poll_interval_minutes ?? 20;
+    $("interval").value = s.poll_interval_minutes ?? 40;
     const al = s.allowance;
     if (al) {
       let t = `eBay allows ${al.limit.toLocaleString()} searches a day. Used in the last 24 hours: `
