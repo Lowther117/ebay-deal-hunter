@@ -22,6 +22,7 @@ from urllib.parse import urlparse, parse_qs
 
 from . import APP_TITLE, __version__
 from . import core
+from . import theme as house_theme
 from .paths import DATA_DIR, CONFIG_PATH
 from .ui import PAGE
 
@@ -274,7 +275,8 @@ class Handler(BaseHTTPRequestHandler):
                 "config_path": str(CONFIG_PATH),
                 "version": __version__,
                 "browser_mode": STATE.browser_mode,
-                "dark": bool(cfg.get("dark", True)),
+                "theme": house_theme.from_settings(cfg),
+                "dark": house_theme.is_dark(house_theme.from_settings(cfg)),
                 "save_dir": str(cfg.get("save_dir") or ""),
                 "save_dir_default": str(core.downloads_dir()),
             }
@@ -581,8 +583,12 @@ def update_settings(body: dict) -> dict:
                 cfg[field] = max(lo, min(hi, value))
         if body.get("quality_mode") in ("strict", "balanced", "loose"):
             cfg["quality_mode"] = body["quality_mode"]
-        if "dark" in body:
-            cfg["dark"] = bool(body["dark"])   # the Light/Dark toggle
+        if isinstance(body.get("theme"), str):  # the theme button / Ctrl+D
+            cfg["theme"] = house_theme.resolve(body["theme"])
+            cfg["dark"] = house_theme.is_dark(cfg["theme"])
+        elif "dark" in body:                    # an older page: the Light/Dark toggle
+            cfg["dark"] = bool(body["dark"])
+            cfg["theme"] = house_theme.resolve(cfg["dark"])
         if "save_dir" in body:
             chosen = str(body["save_dir"] or "").strip()
             if chosen and not Path(chosen).expanduser().is_dir():
@@ -626,7 +632,8 @@ def build_snapshot(out_path: Path) -> Path:
         "has_keys": True,          # suppresses the "add your keys" prompt
         "sites": cfg.get("sites", {"ebay": True}),
         "feed_sources": __import__("dealhunter.sources", fromlist=["x"]).FEED_SOURCE_LABELS,
-        "dark": bool(cfg.get("dark", True)),
+        "theme": house_theme.from_settings(cfg),
+        "dark": house_theme.is_dark(house_theme.from_settings(cfg)),
         "data_dir": "", "version": "snapshot",
     }
 

@@ -3,19 +3,27 @@
 from . import theme
 
 _PAGE = r"""<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="phosphor">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>eBay Deal Hunter</title>
 <style>
-  /* House palette (dealhunter/theme.py). Dark is the default; the Light/Dark
-     button, Ctrl+D and the saved "dark" setting switch data-theme at runtime. */
-  :root, :root[data-theme="dark"] {
+  /* House palettes (dealhunter/theme.py), the same three as Winnow. Phosphor
+     purple is the default; the theme button, Ctrl+D (Phosphor -> Dark -> Light)
+     and the saved "theme" setting switch data-theme at runtime. */
+  :root, :root[data-theme="phosphor"] {
+    color-scheme: dark;
+    __PHOSPHOR_VARS__
+    --shadow: none;
+  }
+  :root[data-theme="dark"] {
     color-scheme: dark;
     __DARK_VARS__
     --shadow: none;
   }
+  /* Winnow's phosphor glow on the title */
+  :root[data-theme="phosphor"] h1 { text-shadow: 0 0 14px rgba(183,125,255,0.55); }
   :root[data-theme="light"] {
     color-scheme: light;
     __LIGHT_VARS__
@@ -200,7 +208,7 @@ _PAGE = r"""<!DOCTYPE html>
       <span class="spacer"></span>
       <button id="btnScan" class="primary">Scan now</button>
       <button id="btnAuto" class="chip" aria-pressed="false">Auto</button>
-      <button id="btnTheme" title="Switch between light and dark (Ctrl+D)">Light</button>
+      <button id="btnTheme" title="Next theme: Phosphor, Dark, Light (Ctrl+D)">Dark</button>
       <button id="btnQuit" class="danger" hidden title="Stop the app - it has no window of its own to close">Quit</button>
     </div>
     <div class="tabs" role="tablist">
@@ -913,7 +921,7 @@ async function refresh() {
     return;
   }
   DATA = data;
-  if (data.settings && "dark" in data.settings) setTheme(!!data.settings.dark, false);
+  if (data.settings) setTheme(data.settings.theme || (data.settings.dark === false ? "light" : "phosphor"), false);
   $("btnQuit").hidden = !(data.settings && data.settings.browser_mode);
   tiles(); chips(); table(); charts();
   if (activeTab === "watches") watchList();
@@ -940,15 +948,19 @@ $("btnAuto").onclick = async () => {
   const on = $("btnAuto").getAttribute("aria-pressed") !== "true";
   applyStatus(await api("/api/auto", { on }));
 };
-function setTheme(dark, persist) {
-  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-  $("btnTheme").textContent = dark ? "Light" : "Dark";
+const THEMES = ["phosphor", "dark", "light"];   // the Ctrl+D cycle, as in Winnow
+const THEME_LABELS = { phosphor: "Phosphor", dark: "Dark", light: "Light" };
+function nextTheme(name) { return THEMES[(THEMES.indexOf(name) + 1) % THEMES.length]; }
+function setTheme(name, persist) {
+  if (!THEMES.includes(name)) name = "phosphor";
+  document.documentElement.setAttribute("data-theme", name);
+  $("btnTheme").textContent = THEME_LABELS[nextTheme(name)];
   if (persist && typeof STATIC_DATA === "undefined") {
-    if (DATA.settings) DATA.settings.dark = dark;
-    api("/api/settings", { dark }).catch(() => { /* the choice still applies for this session */ });
+    if (DATA.settings) { DATA.settings.theme = name; DATA.settings.dark = name !== "light"; }
+    api("/api/settings", { theme: name }).catch(() => { /* the choice still applies for this session */ });
   }
 }
-function toggleTheme() { setTheme(document.documentElement.getAttribute("data-theme") !== "dark", true); }
+function toggleTheme() { setTheme(nextTheme(document.documentElement.getAttribute("data-theme") || "phosphor"), true); }
 $("btnTheme").onclick = toggleTheme;
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "d") {
@@ -1030,5 +1042,6 @@ setInterval(poll, 2000);
 </html>
 """
 
-PAGE = (_PAGE.replace("__DARK_VARS__", theme.css_vars(True))
-             .replace("__LIGHT_VARS__", theme.css_vars(False)))
+PAGE = (_PAGE.replace("__PHOSPHOR_VARS__", theme.css_vars("phosphor"))
+             .replace("__DARK_VARS__", theme.css_vars("dark"))
+             .replace("__LIGHT_VARS__", theme.css_vars("light")))

@@ -101,7 +101,7 @@ DEFAULT_CONFIG = {
     "baseline_max_age_hours": 12,
     "listing_expiry_days": 7,
     "quality_mode": "balanced",  # strict | balanced | loose
-    "dark": True,                # the window's Light/Dark toggle - dark by default
+    "dark": True,                # older files' Light/Dark flag; "theme" (phosphor | dark | light) wins when set
     "global_exclude_terms": [
         # dead or dying
         "for parts", "spares", "spares or repair", "spares repairs", "repair",
