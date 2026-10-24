@@ -100,10 +100,12 @@ class AppState:
 
     # -- automatic scanning ----------------------------------------------- #
     def set_auto(self, on: bool) -> None:
+        # Read config.json before taking the state lock, never while holding it.
+        interval = self._interval() if on else None
         with self.lock:
             self.auto = bool(on)
             self.auto_note = ""
-            self.next_auto = time.time() + self._interval() if on else None
+            self.next_auto = time.time() + interval if on else None
 
     def _interval(self) -> int:
         """Seconds between automatic scans - the interval asked for, stretched
@@ -141,8 +143,9 @@ class AppState:
                     continue
                 core.log("Automatic scan starting.")
                 self.start_scan(auto=True)
+                interval = self._interval()
                 with self.lock:
-                    self.next_auto = time.time() + self._interval()
+                    self.next_auto = time.time() + interval
                     self.auto_note = ""
 
     def shutdown(self) -> None:
@@ -486,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
 # config mutation
 # --------------------------------------------------------------------------- #
 
-CONFIG_LOCK = threading.Lock()
+CONFIG_LOCK = core.CONFIG_LOCK     # shared with core.load_config()'s own writes
 
 SITE_KEYS = ("ebay", "ebay_refurbished", "ebay_auctions", "cex",
              "backmarket", "musicmagpie", "cashconverters", "reboxed", "hoxtonmacs", "ur",

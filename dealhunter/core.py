@@ -201,21 +201,35 @@ DEFAULT_CONFIG = {
 }
 
 
+# Held by anything that reads, changes and writes config.json (the server's
+# settings routes share it), so two writers can't undo each other's changes.
+# Re-entrant: the server holds it while calling load_config().
+CONFIG_LOCK = threading.RLock()
+
+
+def write_config_file(cfg: dict) -> None:
+    """Write config.json via a temp file, so a crash mid-write can't truncate it."""
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    os.replace(tmp, CONFIG_PATH)
+
+
 def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        log(f"No config.json found at {CONFIG_PATH} - writing a starter one.")
-        CONFIG_PATH.write_text(json.dumps(STARTER_CONFIG, indent=2), encoding="utf-8")
-    cfg = dict(DEFAULT_CONFIG)
-    try:
-        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"config.json is not valid JSON ({exc.msg} at line {exc.lineno}) - "
-            f"fix or delete {CONFIG_PATH}") from exc
-    if not isinstance(loaded, dict):
-        raise RuntimeError(f"config.json should contain one object - fix or delete {CONFIG_PATH}")
-    cfg.update(loaded)
-    _adopt_new_watches(cfg)
+    with CONFIG_LOCK:
+        if not CONFIG_PATH.exists():
+            log(f"No config.json found at {CONFIG_PATH} - writing a starter one.")
+            write_config_file(STARTER_CONFIG)
+        cfg = dict(DEFAULT_CONFIG)
+        try:
+            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"config.json is not valid JSON ({exc.msg} at line {exc.lineno}) - "
+                f"fix or delete {CONFIG_PATH}") from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(f"config.json should contain one object - fix or delete {CONFIG_PATH}")
+        cfg.update(loaded)
+        _adopt_new_watches(cfg)
     return cfg
 
 
@@ -242,7 +256,7 @@ def _adopt_new_watches(cfg: dict) -> None:
         return
     watches.extend(added)
     try:
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        write_config_file(cfg)
         if added:
             log(f"Added {len(added)} new watch(es) from this version: "
                 + ", ".join(w["name"] for w in added))
@@ -1690,6 +1704,8 @@ def scan_watch_auctions(client, conn, watch, cfg, baseline) -> tuple[int, int]:
                 when = datetime.fromisoformat(ends.replace("Z", "+00:00"))
             except ValueError:
                 continue
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
             if when > cutoff:
                 continue          # too far out to mean anything yet
         records.append(rec)
@@ -2315,15 +2331,17 @@ def credentials() -> tuple[str, str]:
 
 def save_credentials(client_id: str, client_secret: str) -> None:
     from .paths import CREDS_PATH
-    CREDS_PATH.write_text(
+    tmp = CREDS_PATH.with_name(CREDS_PATH.name + ".tmp")
+    tmp.write_text(
         json.dumps({"client_id": client_id.strip(),
                     "client_secret": client_secret.strip()}, indent=2),
         encoding="utf-8",
     )
     try:
-        os.chmod(CREDS_PATH, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
+    os.replace(tmp, CREDS_PATH)
     if TOKEN_CACHE.exists():
         try:
             TOKEN_CACHE.unlink()  # keys changed, so the cached token is stale

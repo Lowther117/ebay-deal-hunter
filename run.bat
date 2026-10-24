@@ -15,13 +15,14 @@ for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass
 if not defined PY goto :nopython
 if not exist "%PY%" goto :nopython
 "%PY%" -m venv "%VENV%"
-if errorlevel 1 ( echo Could not create the environment. & pause & exit /b 1 )
+if errorlevel 1 ( echo Could not create the environment. & rmdir /s /q "%VENV%" 2>nul & pause & exit /b 1 )
 "%VENV%\Scripts\python.exe" -m pip install --upgrade pip >nul
 REM proxy_tools (needed by pywebview) is source-only on PyPI, so it goes in
 REM before --only-binary is applied to everything else - same as the build.
 "%VENV%\Scripts\python.exe" -m pip install proxy_tools >nul
+REM  a half-set-up .venv would be trusted by every later launch - remove it so the next one retries
 "%VENV%\Scripts\python.exe" -m pip install --only-binary :all: -r "%~dp0requirements.txt"
-if errorlevel 1 ( pause & exit /b 1 )
+if errorlevel 1 ( rmdir /s /q "%VENV%" & pause & exit /b 1 )
 REM The native window needs pythonnet; without it the app opens in the browser.
 "%VENV%\Scripts\python.exe" -m pip install --only-binary :all: pythonnet clr-loader >nul 2>&1 || echo pythonnet did not install - the app will open in your browser instead.
 

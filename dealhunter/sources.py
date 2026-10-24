@@ -109,12 +109,13 @@ def _local(cfg: dict, text: str) -> str:
     return next((t for t in towns if t.lower() in (text or "").lower()), "")
 
 
-# In-memory cache for shop searches: (source, query, floor, cap) -> (ts, records)
+# In-memory cache for shop searches: (source, query, floor, cap, limit) -> (ts, records)
 _CACHE: dict[tuple, tuple[float, list[dict]]] = {}
 
 
 def _cached(source: str, watch: dict, cfg: dict, fetch):
-    key = (source, watch.get("query", ""), watch.get("min_price") or 0, watch.get("max_price") or 0)
+    key = (source, watch.get("query", ""), watch.get("min_price") or 0, watch.get("max_price") or 0,
+           watch.get("result_limit", 100))
     ttl = float(cfg.get("shop_cache_hours", 6) or 0) * 3600
     hit = _CACHE.get(key)
     if hit and ttl and time.time() - hit[0] < ttl:

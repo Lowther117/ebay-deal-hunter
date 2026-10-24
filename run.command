@@ -22,12 +22,12 @@ pick() {
 if [ ! -x "$VENV/bin/python" ]; then
   echo "First run - setting Python up. This happens once."
   PY="$(pick)" || { echo "No Python 3.9+ found. Run build-app.command once; it installs one."; read -r; exit 1; }
-  "$PY" -m venv "$VENV" || { echo "Could not create the environment."; read -r; exit 1; }
+  "$PY" -m venv "$VENV" || { echo "Could not create the environment."; rm -rf "$VENV"; read -r; exit 1; }
   "$VENV/bin/python" -m pip install --upgrade pip >/dev/null
   # proxy_tools (needed by pywebview) is source-only on PyPI, so it goes in
   # before --only-binary is applied to everything else - same as the build.
   "$VENV/bin/python" -m pip install proxy_tools >/dev/null
-  "$VENV/bin/python" -m pip install --only-binary :all: -r requirements.txt || { read -r; exit 1; }
+  "$VENV/bin/python" -m pip install --only-binary :all: -r requirements.txt || { rm -rf "$VENV"; read -r; exit 1; }
   # The native window needs pyobjc; without it the app opens in the browser.
   "$VENV/bin/python" -m pip install --only-binary :all: \
       pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-WebKit \

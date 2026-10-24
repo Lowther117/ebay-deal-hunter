@@ -326,12 +326,15 @@ def run(argv) -> int:
 
     # Mirror the log to a file so problems are diagnosable after the fact.
     try:
+        import threading
         log_file = open(LOG_PATH, "a", encoding="utf-8")
+        log_lock = threading.Lock()     # the scanner, auto loop and requests all log
         original_sink = core.LOG_SINK
 
         def sink(line):
-            log_file.write(line + "\n")
-            log_file.flush()
+            with log_lock:
+                log_file.write(line + "\n")
+                log_file.flush()
             if original_sink:
                 original_sink(line)
 
