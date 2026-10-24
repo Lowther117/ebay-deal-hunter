@@ -76,8 +76,9 @@ class AppState:
                 self.progress = {"done": done, "total": total, "watch": watch}
 
         def worker():
-            conn = core.open_db()
+            conn = None
             try:
+                conn = core.open_db()
                 cfg = core.load_config()
                 result = core.scan_all(cfg, conn, names=names, group=group,
                                        demo=demo, progress=progress, auto=auto)
@@ -85,7 +86,8 @@ class AppState:
                 core.log(f"Scan failed: {exc!r}")
                 result = {"ok": False, "error": str(exc), "scanned": 0, "new_hits": 0}
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
             with self.lock:
                 self.scanning = False
                 self.last_run = datetime.now(timezone.utc).isoformat(timespec="seconds")

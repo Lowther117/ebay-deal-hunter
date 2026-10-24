@@ -25,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from . import __version__
@@ -707,6 +708,14 @@ def normalise(item: dict, *, use_bid: bool = False) -> dict:
     }
 
 
+@lru_cache(maxsize=4096)
+def _word_re(term: str, suffix: str = "") -> re.Pattern:
+    """The whole-word pattern for a term, compiled once. These run for every
+    exclude/working/import term against every listing, so going through
+    re's own cache lookup each time was the bulk of the filtering cost."""
+    return re.compile(r"(?<![a-z0-9])" + re.escape(term) + suffix + r"(?![a-z0-9])")
+
+
 def title_blocked(title: str, excludes: list[str]) -> str | None:
     """Return the offending term if the title trips an exclusion."""
     low = f" {title.lower()} "
@@ -714,8 +723,7 @@ def title_blocked(title: str, excludes: list[str]) -> str | None:
         t = term.lower().strip()
         if not t:
             continue
-        pattern = r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])"
-        if re.search(pattern, low):
+        if _word_re(t).search(low):
             return term
     return None
 
@@ -728,14 +736,14 @@ def title_has_all(title: str, required: list[str]) -> bool:
         t = term.lower().strip()
         if not t:
             continue
-        if not re.search(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", low):
+        if not _word_re(t).search(low):
             return False
     return True
 
 
 def _says(text: str, word: str) -> bool:
     """`word` appears in `text` as a whole word, plural allowed."""
-    return bool(re.search(r"(?<![a-z0-9])" + re.escape(word) + r"(?:s|es)?(?![a-z0-9])", text))
+    return bool(_word_re(word, r"(?:s|es)?").search(text))
 
 
 def is_relevant(rec: dict, watch: dict) -> bool:
@@ -1003,8 +1011,7 @@ def has_working_evidence(title: str, working_terms: list[str]) -> str | None:
         t = term.lower().strip()
         if not t:
             continue
-        pattern = r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])"
-        for match in re.finditer(pattern, low):
+        for match in _word_re(t).finditer(low):
             preceding = _preceding_words(low, match.start())
             if not _negator_in(preceding):
                 return term
@@ -1023,8 +1030,7 @@ def has_negated_working_claim(title: str, working_terms: list[str]) -> str | Non
         t = term.lower().strip()
         if not t:
             continue
-        pattern = r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])"
-        for match in re.finditer(pattern, low):
+        for match in _word_re(t).finditer(low):
             preceding = _preceding_words(low, match.start())
             hit = _negator_in(preceding)
             if hit and hit not in ("needs", "requires"):  # "needs charger" isn't a fault
@@ -1716,13 +1722,19 @@ def cex_queries(query: str) -> list[str]:
     the word "or". So each alternative becomes its own search and the results
     are merged. Symbols eBay tolerates are dropped too.
     """
+    return list(_cex_queries(query))
+
+
+@lru_cache(maxsize=1024)
+def _cex_queries(query: str) -> tuple[str, ...]:
+    # is_relevant() asks for the same few watch queries once per listing.
     out = []
     for part in re.split(r"\s+OR\s+", query, flags=re.I):
         part = re.sub(r"[^\w\s.+-]", " ", part)
         part = re.sub(r"\s+", " ", part).strip()
         if part and part.lower() not in (p.lower() for p in out):
             out.append(part)
-    return out[:6]
+    return tuple(out[:6])
 
 
 class CexClient:
