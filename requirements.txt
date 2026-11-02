@@ -6,11 +6,16 @@
 # in a real native window instead of a browser tab, and so the build scripts can
 # generate the icons.
 
+# Every package here has a floor (the oldest version these scripts were
+# tested with) and a ceiling at the next major version. A new major is
+# something to opt into after a test build, never something a routine
+# rebuild discovers for you - PyMuPDF 2.0 broke two builds that way (Nov 2026).
+
 # Native desktop window wrapper around the local HTTP server.
 #   macOS   -> WKWebView via pyobjc
 #   Windows -> WebView2 / WinForms via pythonnet
-pywebview>=4.4
+pywebview>=4.4,<7
 
 # Build-time only: tools/make_icons.py draws assets/icon.png / .ico / .iconset.
 # Not imported by the packaged app (it is excluded in dealhunter.spec).
-pillow>=10.0
+pillow>=10.0,<14

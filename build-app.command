@@ -147,7 +147,7 @@ else
     fi
 fi
 "$PY" -m pip install --upgrade pip --quiet
-"$PY" -m pip install --upgrade --only-binary :all: pyinstaller \
+"$PY" -m pip install --upgrade --only-binary :all: "pyinstaller>=6.11,<7" \
     || fail "could not install PyInstaller"
 
 # --only-binary :all: everywhere: a missing wheel then fails in seconds

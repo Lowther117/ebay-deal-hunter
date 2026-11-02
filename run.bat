@@ -24,7 +24,7 @@ REM  a half-set-up .venv would be trusted by every later launch - remove it so t
 "%VENV%\Scripts\python.exe" -m pip install --only-binary :all: -r "%~dp0requirements.txt"
 if errorlevel 1 ( rmdir /s /q "%VENV%" & pause & exit /b 1 )
 REM The native window needs pythonnet; without it the app opens in the browser.
-"%VENV%\Scripts\python.exe" -m pip install --only-binary :all: pythonnet clr-loader >nul 2>&1 || echo pythonnet did not install - the app will open in your browser instead.
+"%VENV%\Scripts\python.exe" -m pip install --only-binary :all: "pythonnet>=3,<4" "clr-loader>=0.2,<1" >nul 2>&1 || echo pythonnet did not install - the app will open in your browser instead.
 
 :run
 start "" "%VENV%\Scripts\pythonw.exe" "%~dp0app.py"

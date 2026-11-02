@@ -46,7 +46,7 @@ if not exist "%PY%" (
 :haveenv
 echo    Installing PyInstaller...
 "%PY%" -m pip install --upgrade pip --quiet >> "%LOG%" 2>&1
-"%PY%" -m pip install --upgrade --only-binary :all: pyinstaller >> "%LOG%" 2>&1
+"%PY%" -m pip install --upgrade --only-binary :all: "pyinstaller>=6.11,<7" >> "%LOG%" 2>&1
 if errorlevel 1 (
     echo    ERROR: could not install PyInstaller.
     goto :failed
@@ -74,7 +74,7 @@ if errorlevel 1 (
 rem pywebview draws its window with WebView2, reached through pythonnet's clr.
 rem Without it the app still runs - it just opens in the browser instead.
 echo    Windows window backend ^(pythonnet^)...
-"%PY%" -m pip install --only-binary :all: pythonnet clr-loader >> "%LOG%" 2>&1
+"%PY%" -m pip install --only-binary :all: "pythonnet>=3,<4" "clr-loader>=0.2,<1" >> "%LOG%" 2>&1
 if errorlevel 1 echo    WARNING: pythonnet did not install - the app will fall back to the browser.
 
 "%PY%" -c "import webview, clr" >nul 2>&1
