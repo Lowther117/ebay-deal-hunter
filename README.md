@@ -171,9 +171,9 @@ you pick another, with **Browse…** in the app window), a live activity log, an
 
 **Scan now** runs everything switched on. **Auto** keeps scanning on the interval for
 as long as the app is open - or less often than that if the interval would use up eBay's
-daily allowance. The window uses the Phosphor purple theme by default (the same
-look as Winnow); the theme button in the toolbar (or **Ctrl+D**) cycles Phosphor →
-Dark → Light, and the choice is remembered in `config.json` as `theme`.
+daily allowance. The window uses the Phosphor glass theme by default (the same
+look as the website); the theme button in the toolbar (or **Ctrl+D**) cycles Glass →
+Phosphor → Dark → Light, and the choice is remembered in `config.json` as `theme`.
 
 ### How the market price is worked out
 
@@ -532,7 +532,7 @@ dealhunter/
   sites.py              the curated quick-link list for other sites (CeX search itself is in core.py)
   server.py             local HTTP server and JSON API
   ui.py                 the interface, one self-contained page
-  theme.py              the Phosphor purple, Dark and Light palettes (shared with my other apps)
+  theme.py              the Phosphor glass, Phosphor purple, Dark and Light palettes (shared with my other apps)
   paths.py              per-platform data folder
 tools/
   make_icons.py         draws the app icon

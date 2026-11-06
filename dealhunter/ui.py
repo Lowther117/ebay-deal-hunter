@@ -3,20 +3,40 @@
 from . import theme
 
 _PAGE = r"""<!DOCTYPE html>
-<html lang="en" data-theme="phosphor">
+<html lang="en" data-theme="glass">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>eBay Deal Hunter</title>
 <style>
-  /* House palettes (dealhunter/theme.py), the same three as Winnow. Phosphor
-     purple is the default; the theme button, Ctrl+D (Phosphor -> Dark -> Light)
-     and the saved "theme" setting switch data-theme at runtime. */
-  :root, :root[data-theme="phosphor"] {
+  /* House palettes (dealhunter/theme.py), the same four as Winnow. Phosphor
+     glass is the default; the theme button, Ctrl+D (Glass -> Phosphor -> Dark
+     -> Light) and the saved "theme" setting switch data-theme at runtime. */
+  :root, :root[data-theme="glass"] {
+    color-scheme: dark;
+    __GLASS_VARS__
+    --shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.08);
+  }
+  :root[data-theme="phosphor"] {
     color-scheme: dark;
     __PHOSPHOR_VARS__
     --shadow: none;
   }
+  /* Phosphor glass, as on the website: a purple haze behind everything and
+     frosted panels over it. The flat --panel colour from theme.py stays as
+     the fallback for anything that cannot blur. */
+  :root[data-theme="glass"] body {
+    background: radial-gradient(55vw 55vw at 10% 5%, rgba(140,70,230,.5), transparent 60%),
+                radial-gradient(45vw 45vw at 90% 25%, rgba(90,40,200,.38), transparent 60%),
+                radial-gradient(60vw 50vw at 55% 100%, rgba(190,90,255,.3), transparent 60%), #06020c;
+    background-attachment: fixed;
+  }
+  :root[data-theme="glass"] header { background: rgba(6,2,12,.5); backdrop-filter: blur(18px) saturate(1.4); -webkit-backdrop-filter: blur(18px) saturate(1.4); }
+  :root[data-theme="glass"] .tile, :root[data-theme="glass"] .card, :root[data-theme="glass"] table, :root[data-theme="glass"] button:not(.primary):not(.tab) {
+    background: rgba(201,140,255,.055); border-color: rgba(201,140,255,.22);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  :root[data-theme="glass"] h1 { text-shadow: 0 0 14px rgba(199,155,255,0.45); }
   :root[data-theme="dark"] {
     color-scheme: dark;
     __DARK_VARS__
@@ -923,7 +943,7 @@ async function refresh() {
     return;
   }
   DATA = data;
-  if (data.settings) setTheme(data.settings.theme || (data.settings.dark === false ? "light" : "phosphor"), false);
+  if (data.settings) setTheme(data.settings.theme || (data.settings.dark === false ? "light" : "glass"), false);
   $("btnQuit").hidden = !(data.settings && data.settings.browser_mode);
   tiles(); chips(); table(); charts();
   if (activeTab === "watches") watchList();
@@ -950,11 +970,11 @@ $("btnAuto").onclick = async () => {
   const on = $("btnAuto").getAttribute("aria-pressed") !== "true";
   applyStatus(await api("/api/auto", { on }));
 };
-const THEMES = ["phosphor", "dark", "light"];   // the Ctrl+D cycle, as in Winnow
-const THEME_LABELS = { phosphor: "Phosphor", dark: "Dark", light: "Light" };
+const THEMES = ["glass", "phosphor", "dark", "light"];   // the Ctrl+D cycle, as in Winnow
+const THEME_LABELS = { glass: "Glass", phosphor: "Phosphor", dark: "Dark", light: "Light" };
 function nextTheme(name) { return THEMES[(THEMES.indexOf(name) + 1) % THEMES.length]; }
 function setTheme(name, persist) {
-  if (!THEMES.includes(name)) name = "phosphor";
+  if (!THEMES.includes(name)) name = "glass";
   document.documentElement.setAttribute("data-theme", name);
   $("btnTheme").textContent = THEME_LABELS[nextTheme(name)];
   if (persist && typeof STATIC_DATA === "undefined") {
@@ -962,7 +982,7 @@ function setTheme(name, persist) {
     api("/api/settings", { theme: name }).catch(() => { /* the choice still applies for this session */ });
   }
 }
-function toggleTheme() { setTheme(nextTheme(document.documentElement.getAttribute("data-theme") || "phosphor"), true); }
+function toggleTheme() { setTheme(nextTheme(document.documentElement.getAttribute("data-theme") || "glass"), true); }
 $("btnTheme").onclick = toggleTheme;
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "d") {
@@ -1044,6 +1064,7 @@ setInterval(poll, 2000);
 </html>
 """
 
-PAGE = (_PAGE.replace("__PHOSPHOR_VARS__", theme.css_vars("phosphor"))
+PAGE = (_PAGE.replace("__GLASS_VARS__", theme.css_vars("glass"))
+             .replace("__PHOSPHOR_VARS__", theme.css_vars("phosphor"))
              .replace("__DARK_VARS__", theme.css_vars("dark"))
              .replace("__LIGHT_VARS__", theme.css_vars("light")))
